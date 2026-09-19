@@ -217,7 +217,8 @@ public int Health;
 如果 ReadOnly 在当前系统中表示：不能编辑
 那么它可以通过 State Updater 转换成：
 ReadOnly
-↓ StateUpdater
+↓ 
+StateUpdater
 ↓
 Enabled = false
 最终 Drawer 只需要读取：
