@@ -1,5 +1,4 @@
 using System;
-using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
@@ -382,10 +381,14 @@ namespace AbeAttributes.Editor
             using (new EditorGUI.DisabledScope(
                 !State.Enabled))
             {
-                AbeDrawerChain.Draw(
+                _drawerChain ??=
+                        this.Tree
+                            .DrawerLocator
+                            .CreateChain(this);
+
+                _drawerChain.Draw(
                     this,
-                    label,
-                    ref _drawerChain);
+                    label);
             }
         }
 

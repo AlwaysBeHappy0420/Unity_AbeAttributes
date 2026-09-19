@@ -4,7 +4,7 @@ using UnityEngine;
 namespace AbeAttributes.Editor
 {
     [AbeDrawerPriority(80)]
-    public sealed class AbeBoxGroupDrawer
+    public sealed class BoxGroupDrawer
         : AbeGroupDrawer<BoxGroupAttribute>
     {
         protected override void DrawGroupPropertyLayout(

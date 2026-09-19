@@ -1,5 +1,3 @@
-using UnityEditor;
-
 namespace AbeAttributes.Editor
 {
     public sealed class AbePropertyContext
