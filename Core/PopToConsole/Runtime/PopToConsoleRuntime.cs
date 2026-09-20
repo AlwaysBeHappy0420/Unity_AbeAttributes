@@ -1,5 +1,5 @@
-using System.Diagnostics;
 using UnityEngine;
+using Debug = UnityEngine.Debug;
 
 namespace AbeAttributes
 {
@@ -9,32 +9,57 @@ namespace AbeAttributes
             string typeName,
             string methodName)
         {
-            UnityEngine.Debug.Log(
+            Debug.Log(
                 $"[PopToConsole] Invoke: " +
                 $"{typeName}.{methodName}");
+        }
 
-            LogCallStack();
+        public static void OnGet(
+            string typeName,
+            string propertyName,
+            object value)
+        {
+            Debug.Log(
+                $"[PopToConsole] Get: " +
+                $"{typeName}.{propertyName} = " +
+                $"{value}");
+        }
+
+        public static void OnSet(
+            string typeName,
+            string propertyName,
+            object value)
+        {
+            Debug.Log(
+                $"[PopToConsole] Set: " +
+                $"{typeName}.{propertyName} = " +
+                $"{value}");
         }
 
         public static void OnManual(
             string typeName,
-            string methodName)
+            string memberName)
         {
-            UnityEngine.Debug.Log(
+            Debug.Log(
                 $"[PopToConsole] Manual: " +
-                $"{typeName}.{methodName}");
+                $"{typeName}.{memberName}");
         }
 
-        private static void LogCallStack()
+        public static void OnManual(
+            string typeName,
+            string memberName,
+            object value)
         {
-            StackTrace stackTrace =
-                new StackTrace(
-                    2,
-                    true);
+            Debug.Log(
+                $"[PopToConsole] Manual: " +
+                $"{typeName}.{memberName} = " +
+                $"{value}");
+        }
 
-            UnityEngine.Debug.Log(
-                "[PopToConsole] Call Stack:\n" +
-                stackTrace);
+        public static void Break()
+        {
+            Debug.Log("Break Point Reached");
+            Debug.Break();
         }
     }
 }

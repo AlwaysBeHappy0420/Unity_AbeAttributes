@@ -1,12 +1,31 @@
-using AbeAttributes;
 using UnityEngine;
+using AbeAttributes;
 
 public class AttributeTest : MonoBehaviour
 {
-    [PopToConsole(PopToConsoleMode.Invoke)]
-    [PopToConsole(PopToConsoleMode.Manual)]
-    public static void Foo()
+    private float _hp = 10;
+
+    [PopToConsole(
+    PopToConsoleMode.Set,
+    nameof(BreakIfLessThanZero))]
+    public float HP
     {
-        Debug.Log("Foo Body");
+        get => _hp;
+        set => _hp = value;
+    }
+
+    private bool BreakIfLessThanZero(float value)
+    {
+        return value <= 0;
+    }
+
+    private void Start()
+    {
+        HP = 10;
+    }
+
+    void Update()
+    {
+        HP -= Time.deltaTime;
     }
 }

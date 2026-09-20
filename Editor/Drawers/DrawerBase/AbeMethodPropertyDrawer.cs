@@ -66,8 +66,7 @@ namespace AbeAttributes.Editor
             using (new EditorGUI.DisabledScope(
                 !canInvoke))
             {
-                if (GUILayout.Button(
-                    label))
+                if (GUILayout.Button(label))
                 {
                     property.ValueEntry
                         .InvokeMethod(
@@ -85,7 +84,7 @@ namespace AbeAttributes.Editor
             MethodInfo method)
         {
             if (!GUILayout.Button(
-                "Pop To Console"))
+                    "Pop To Console"))
             {
                 return;
             }

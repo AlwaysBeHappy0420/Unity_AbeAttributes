@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Reflection;
+
 using UnityEditor;
 using UnityEngine;
 
@@ -20,6 +22,12 @@ namespace AbeAttributes.Editor
             switch (property.Kind)
             {
                 case AbePropertyKind.NativeProperty:
+                    DrawNativeProperty(
+                        property,
+                        label);
+
+                    return;
+
                 case AbePropertyKind.NonSerializedField:
                 case AbePropertyKind.NativeCollectionElement:
                     DrawValue(
@@ -33,9 +41,82 @@ namespace AbeAttributes.Editor
             }
         }
 
-        // ================================================================
-        // Native Value
-        // ================================================================
+        private void DrawNativeProperty(
+            AbeProperty property,
+            GUIContent label)
+        {
+            PropertyInfo propertyInfo =
+                property.Info?.PropertyInfo;
+
+            if (propertyInfo == null)
+            {
+                DrawValue(
+                    property,
+                    label);
+
+                return;
+            }
+
+            if (HasPopToConsoleManual(
+                    propertyInfo))
+            {
+                DrawPopToConsoleManual(
+                    property,
+                    propertyInfo);
+            }
+
+            DrawValue(
+                property,
+                label);
+        }
+
+        private static bool HasPopToConsoleManual(
+            PropertyInfo propertyInfo)
+        {
+            object[] attributes =
+                propertyInfo.GetCustomAttributes(
+                    typeof(PopToConsoleAttribute),
+                    true);
+
+            for (int i = 0;
+                 i < attributes.Length;
+                 i++)
+            {
+                if (!(attributes[i]
+                      is PopToConsoleAttribute attribute))
+                {
+                    continue;
+                }
+
+                if (attribute.Mode ==
+                    PopToConsoleMode.Manual)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static void DrawPopToConsoleManual(
+    AbeProperty property,
+    PropertyInfo propertyInfo)
+        {
+            if (!GUILayout.Button(
+                    "Pop To Console"))
+            {
+                return;
+            }
+
+            object value =
+                property.ValueEntry.GetValue();
+
+            PopToConsoleRuntime.OnManual(
+                propertyInfo.DeclaringType?.FullName
+                ?? "<UnknownType>",
+                propertyInfo.Name,
+                value);
+        }
 
         private void DrawValue(
             AbeProperty property,
@@ -67,8 +148,8 @@ namespace AbeAttributes.Editor
                 property.Children;
 
             if (CanDrawNestedObject(
-                value,
-                children))
+                    value,
+                    children))
             {
                 DrawNestedObject(
                     property,
@@ -84,10 +165,6 @@ namespace AbeAttributes.Editor
                 value,
                 valueType);
         }
-
-        // ================================================================
-        // Direct Value
-        // ================================================================
 
         private static void DrawDirectValue(
             AbeProperty property,
@@ -114,7 +191,7 @@ namespace AbeAttributes.Editor
                 !canWrite))
             {
                 if (AbeValueFieldRegistry.CanDraw(
-                    valueType))
+                        valueType))
                 {
                     newValue =
                         AbeValueFieldRegistry.Draw(
@@ -139,17 +216,13 @@ namespace AbeAttributes.Editor
                 oldMixedValue;
 
             if (!ValuesEqual(
-                value,
-                newValue))
+                    value,
+                    newValue))
             {
                 property.ValueEntry.SetValue(
                     newValue);
             }
         }
-
-        // ================================================================
-        // Nested Object
-        // ================================================================
 
         private static void DrawNestedObject(
             AbeProperty property,
@@ -202,10 +275,6 @@ namespace AbeAttributes.Editor
             EditorGUI.indentLevel--;
         }
 
-        // ================================================================
-        // Nested Object Detection
-        // ================================================================
-
         private static bool CanDrawNestedObject(
             object value,
             IReadOnlyList<AbeProperty> children)
@@ -225,7 +294,7 @@ namespace AbeAttributes.Editor
                 value.GetType();
 
             if (AbeValueFieldRegistry.CanDraw(
-                type))
+                    type))
             {
                 return false;
             }
@@ -252,10 +321,6 @@ namespace AbeAttributes.Editor
 
             return true;
         }
-
-        // ================================================================
-        // Equality
-        // ================================================================
 
         private static bool ValuesEqual(
             object a,
