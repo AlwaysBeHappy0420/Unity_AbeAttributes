@@ -2,8 +2,8 @@
 
 namespace AbeAttributes
 {
-    public interface IGroupAttribute
-    : IAbeAttribute
+    public class GroupAttribute
+    : AbeAttribute
     {
         string Name { get; }
     }

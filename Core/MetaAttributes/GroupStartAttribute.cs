@@ -15,7 +15,7 @@ namespace AbeAttributes
         AttributeTargets.Method,
         AllowMultiple = true)]
     public sealed class GroupStartAttribute
-        : Attribute, IGroupAttribute
+        :GroupAttribute
     {
 
         public string Name { get; }

@@ -357,7 +357,7 @@ namespace AbeAttributes.Editor
             }
 
             if (attribute
-                is AbeAttributes.IAbeAttribute)
+                is AbeAttributes.AbeAttribute)
             {
                 _attributes.Add(
                     attribute);

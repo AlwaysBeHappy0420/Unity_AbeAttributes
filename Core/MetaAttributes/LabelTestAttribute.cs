@@ -8,7 +8,7 @@ namespace AbeAttributes
         AttributeTargets.Method,
         AllowMultiple = false)]
     public sealed class LabelTextAttribute
-        : Attribute, IAbeAttribute
+        : AbeAttribute
     {
         public string Text { get; }
 

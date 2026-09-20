@@ -2,7 +2,7 @@
 
 namespace AbeAttributes
 {
-    public class MetaAttribute : Attribute, IAbeAttribute
+    public class MetaAttribute : AbeAttribute
     {
     }
 }

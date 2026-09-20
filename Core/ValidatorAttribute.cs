@@ -2,7 +2,7 @@
 
 namespace AbeAttributes
 {
-    public class ValidatorAttribute : Attribute, IAbeAttribute
+    public class ValidatorAttribute : AbeAttribute
     {
     }
 }

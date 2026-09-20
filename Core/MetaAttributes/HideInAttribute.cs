@@ -14,7 +14,7 @@ namespace AbeAttributes
         AttributeTargets.Method,
         AllowMultiple = false)]
     public sealed class HideInAttribute
-        : Attribute, IAbeAttribute
+        : AbeAttribute
     {
         public HideInMode Mode { get; }
 

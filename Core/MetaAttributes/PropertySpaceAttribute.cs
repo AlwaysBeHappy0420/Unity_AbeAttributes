@@ -8,7 +8,7 @@ namespace AbeAttributes
         AttributeTargets.Method,
         AllowMultiple = false)]
     public sealed class PropertySpaceAttribute
-        : Attribute, IAbeAttribute
+        : AbeAttribute
     {
         public float SpaceBefore { get; }
 

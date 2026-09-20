@@ -94,7 +94,7 @@ namespace AbeAttributes.Editor
                     attributes[i];
 
                 if (!(attribute
-                    is AbeAttributes.IAbeAttribute))
+                    is AbeAttributes.AbeAttribute))
                 {
                     continue;
                 }
