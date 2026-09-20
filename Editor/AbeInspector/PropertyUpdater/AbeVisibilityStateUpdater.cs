@@ -1,4 +1,5 @@
 using AbeAttributes;
+using UnityEngine;
 
 namespace AbeAttributes.Editor
 {
@@ -10,36 +11,82 @@ namespace AbeAttributes.Editor
         {
             property.State.SetVisible(true);
 
-            ShowIfAttribute showIf =
-                property.GetAttribute<ShowIfAttribute>();
+            // ============================================================
+            // ShowIf / HideIf
+            // ============================================================
 
-            if (showIf != null)
+            ShowIfAttributeBase showIf =
+                property.GetAttribute<ShowIfAttributeBase>();
+
+            if (showIf is ShowIfAttribute show)
             {
                 property.State.SetVisible(
                     AbeConditionUtility.Evaluate(
                         property,
-                        showIf.Conditions,
-                        showIf.ConditionOperator,
-                        showIf.Inverted,
-                        showIf.EnumValue));
-
-                return;
+                        show.Conditions,
+                        show.ConditionOperator,
+                        show.Inverted,
+                        show.EnumValue));
+            }
+            else if (showIf is HideIfAttribute hide)
+            {
+                property.State.SetVisible(
+                    AbeConditionUtility.Evaluate(
+                        property,
+                        hide.Conditions,
+                        hide.ConditionOperator,
+                        hide.Inverted,
+                        hide.EnumValue));
             }
 
-            HideIfAttribute hideIf =
-                property.GetAttribute<HideIfAttribute>();
+            // ============================================================
+            // HideIn
+            // ============================================================
 
-            if (hideIf != null)
+            HideInAttribute hideIn =
+                property.GetAttribute<HideInAttribute>();
+
+            if (hideIn != null)
+            {
+                bool shouldHide =
+                    hideIn.Mode switch
+                    {
+                        HideInMode.Editor =>
+                            !Application.isPlaying,
+
+                        HideInMode.PlayMode =>
+                            Application.isPlaying,
+
+                        _ => false
+                    };
+
+                if (shouldHide)
+                {
+                    property.State.SetVisible(false);
+                }
+            }
+
+            // ============================================================
+            // GroupStart.ShowIf
+            // ============================================================
+
+            GroupStartAttribute groupStart =
+                property.GetAttribute<GroupStartAttribute>();
+
+            if (groupStart != null &&
+                !string.IsNullOrEmpty(
+                    groupStart.ShowIf))
             {
                 property.State.SetVisible(
                     AbeConditionUtility.Evaluate(
                         property,
-                        hideIf.Conditions,
-                        hideIf.ConditionOperator,
-                        hideIf.Inverted,
-                        hideIf.EnumValue));
-
-                return;
+                        new[]
+                        {
+                            groupStart.ShowIf
+                        },
+                        EConditionOperator.And,
+                        false,
+                        null));
             }
         }
     }

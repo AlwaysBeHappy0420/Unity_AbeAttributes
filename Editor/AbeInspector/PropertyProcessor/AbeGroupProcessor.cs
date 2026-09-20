@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -6,6 +7,11 @@ namespace AbeAttributes.Editor
     public sealed class AbeGroupProcessor
         : AbePropertyProcessor
     {
+        private sealed class GroupContext
+        {
+            public AbeProperty Group;
+        }
+
         public override void Process(
             AbePropertyTree tree,
             List<AbeProperty> properties)
@@ -17,10 +23,11 @@ namespace AbeAttributes.Editor
             }
 
             List<AbeProperty> result =
-                new List<AbeProperty>();
+                new List<AbeProperty>(
+                    properties.Count);
 
-            Dictionary<string, AbeProperty> groups =
-                new Dictionary<string, AbeProperty>();
+            Stack<GroupContext> groupStack =
+                new Stack<GroupContext>();
 
             for (int i = 0;
                  i < properties.Count;
@@ -34,69 +41,125 @@ namespace AbeAttributes.Editor
                     continue;
                 }
 
-                IGroupAttribute groupAttribute =
+                GroupStartAttribute[] starts =
                     property.Attributes
-                        .OfType<IGroupAttribute>()
-                        .FirstOrDefault();
+                        .OfType<GroupStartAttribute>()
+                        .ToArray();
+
+                int endCount =
+                    property.Attributes
+                        .OfType<GroupEndAttribute>()
+                        .Count();
 
                 // ========================================================
-                // Normal property
+                // Start Groups
+                //
+                // GroupStart is processed BEFORE the current property is
+                // added, therefore the current property becomes the first
+                // child of the new group.
                 // ========================================================
 
-                if (groupAttribute == null)
+                for (int startIndex = 0;
+                     startIndex < starts.Length;
+                     startIndex++)
                 {
-                    result.Add(
-                        property);
+                    GroupStartAttribute start =
+                        starts[startIndex];
 
-                    continue;
-                }
+                    string structureKey =
+                        BuildGroupStructureKey(
+                            property,
+                            start,
+                            startIndex);
 
-                // ========================================================
-                // Group key
-                // ========================================================
-
-                string key =
-                    groupAttribute.GetType().FullName
-                    + ":"
-                    + groupAttribute.Name;
-
-                // ========================================================
-                // Create group
-                // ========================================================
-
-                if (!groups.TryGetValue(
-                        key,
-                        out AbeProperty group))
-                {
-                    group =
+                    AbeProperty group =
                         AbeProperty.CreateGroup(
                             tree,
-                            groupAttribute);
+                            start,
+                            structureKey,
+                            property.TargetObject);
 
-                    groups.Add(
-                        key,
-                        group);
+                    // Nested group
+                    if (groupStack.Count > 0)
+                    {
+                        groupStack
+                            .Peek()
+                            .Group
+                            .AddChild(group);
+                    }
+                    else
+                    {
+                        result.Add(group);
+                    }
 
-                    result.Add(
-                        group);
+                    groupStack.Push(
+                        new GroupContext
+                        {
+                            Group = group
+                        });
                 }
 
                 // ========================================================
-                // Add property
+                // Current Property
+                //
+                // If a group is active, this property belongs to the
+                // deepest active group.
                 // ========================================================
 
-                group.AddChild(
-                    property);
+                if (groupStack.Count > 0)
+                {
+                    groupStack
+                        .Peek()
+                        .Group
+                        .AddChild(property);
+                }
+                else
+                {
+                    result.Add(property);
+                }
+
+                // ========================================================
+                // End Groups
+                //
+                // GroupEnd belongs to the current property, so the current
+                // property has already been added before ending the group.
+                // ========================================================
+
+                for (int endIndex = 0;
+                     endIndex < endCount;
+                     endIndex++)
+                {
+                    if (groupStack.Count == 0)
+                    {
+                        // No group to close.
+                        // Ignore invalid GroupEnd safely.
+                        continue;
+                    }
+
+                    groupStack.Pop();
+                }
             }
 
             // ============================================================
-            // Replace
+            // Replace original property list
             // ============================================================
 
             properties.Clear();
 
-            properties.AddRange(
-                result);
+            properties.AddRange(result);
+        }
+
+        private static string BuildGroupStructureKey(
+            AbeProperty property,
+            GroupStartAttribute attribute,
+            int index)
+        {
+            return "group:"
+                   + property.StructureKey
+                   + ":"
+                   + attribute.Name
+                   + ":"
+                   + index;
         }
     }
 }

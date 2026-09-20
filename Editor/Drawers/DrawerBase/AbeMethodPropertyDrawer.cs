@@ -6,8 +6,7 @@ using UnityEngine;
 
 namespace AbeAttributes.Editor
 {
-    [AbePropertyKindDrawer(
-        AbePropertyKind.Method)]
+    [AbePropertyKindDrawer(AbePropertyKind.Method)]
     internal sealed class AbeMethodPropertyDrawer
         : AbePropertyKindDrawer
     {
@@ -30,6 +29,36 @@ namespace AbeAttributes.Editor
                 property,
                 method);
 
+            if (!HasPopToConsoleInvoke(method))
+            {
+                DrawMethodInvokeButton(
+                    property,
+                    label);
+            }
+
+            if (HasPopToConsoleManual(method))
+            {
+                DrawPopToConsoleManual(
+                    method);
+            }
+
+            if (method.ReturnType != typeof(void) &&
+                property.ValueEntry.HasInvokedMethod)
+            {
+                DrawReturnValue(
+                    property,
+                    method.ReturnType);
+            }
+        }
+
+        // ================================================================
+        // Method Invoke
+        // ================================================================
+
+        private static void DrawMethodInvokeButton(
+            AbeProperty property,
+            GUIContent label)
+        {
             bool canInvoke =
                 property.ValueEntry
                     .CanInvokeMethod();
@@ -46,14 +75,81 @@ namespace AbeAttributes.Editor
                                 .GetMethodParameterValues());
                 }
             }
+        }
 
-            if (method.ReturnType != typeof(void) &&
-                property.ValueEntry.HasInvokedMethod)
+        // ================================================================
+        // PopToConsole
+        // ================================================================
+
+        private static void DrawPopToConsoleManual(
+            MethodInfo method)
+        {
+            if (!GUILayout.Button(
+                "Pop To Console"))
             {
-                DrawReturnValue(
-                    property,
-                    method.ReturnType);
+                return;
             }
+
+            PopToConsoleRuntime.OnManual(
+                method.DeclaringType?.FullName
+                ?? "<UnknownType>",
+                method.Name);
+        }
+
+        private static bool HasPopToConsoleInvoke(
+            MethodInfo method)
+        {
+            object[] attributes =
+                method.GetCustomAttributes(
+                    typeof(PopToConsoleAttribute),
+                    true);
+
+            for (int i = 0;
+                 i < attributes.Length;
+                 i++)
+            {
+                if (!(attributes[i]
+                      is PopToConsoleAttribute attribute))
+                {
+                    continue;
+                }
+
+                if (attribute.Mode ==
+                    PopToConsoleMode.Invoke)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool HasPopToConsoleManual(
+            MethodInfo method)
+        {
+            object[] attributes =
+                method.GetCustomAttributes(
+                    typeof(PopToConsoleAttribute),
+                    true);
+
+            for (int i = 0;
+                 i < attributes.Length;
+                 i++)
+            {
+                if (!(attributes[i]
+                      is PopToConsoleAttribute attribute))
+                {
+                    continue;
+                }
+
+                if (attribute.Mode ==
+                    PopToConsoleMode.Manual)
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         // ================================================================

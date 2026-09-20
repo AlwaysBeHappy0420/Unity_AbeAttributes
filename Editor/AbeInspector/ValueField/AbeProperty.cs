@@ -5,8 +5,11 @@ using System.Reflection;
 using UnityEditor;
 using UnityEngine;
 
+
 namespace AbeAttributes.Editor
 {
+
+
     public sealed class AbeProperty
     {
         private readonly List<Attribute> _attributes =
@@ -302,8 +305,10 @@ namespace AbeAttributes.Editor
         }
 
         internal static AbeProperty CreateGroup(
-            AbePropertyTree tree,
-            IGroupAttribute groupAttribute)
+    AbePropertyTree tree,
+    GroupStartAttribute groupAttribute,
+    string structureKey,
+    object targetObject)
         {
             return new AbeProperty(
                 tree,
@@ -311,12 +316,10 @@ namespace AbeAttributes.Editor
                 null,
                 null,
                 typeof(void),
-                "group:"
-                + groupAttribute.GetType().FullName
-                + ":"
-                + groupAttribute.Name,
+                structureKey,
                 new[] { (Attribute)groupAttribute },
-                tree.Target);
+                targetObject,
+                groupAttribute.Name);
         }
 
         // ================================================================
