@@ -3,7 +3,7 @@
 namespace AbeAttributes
 {
     [AttributeUsage(AttributeTargets.Field, AllowMultiple = false, Inherited = true)]
-    public class MaxValueAttribute : ValidatorAttribute
+    public class MaxValueAttribute : AbeAttribute
     {
         public float MaxValue { get; private set; }
         public string MaxValueName { get; private set; }

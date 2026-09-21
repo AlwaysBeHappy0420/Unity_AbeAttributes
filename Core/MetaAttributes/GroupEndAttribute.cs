@@ -7,7 +7,7 @@ namespace AbeAttributes
         AttributeTargets.Property |
         AttributeTargets.Method,
         AllowMultiple = true)]
-    public sealed class GroupEndAttribute : GroupAttribute
+    public sealed class GroupEndAttribute : AbeAttribute
     {
         public string Name => string.Empty;
     }

@@ -38,7 +38,7 @@ namespace AbeAttributes.Editor
                 };
 
         public static AbePropertyValidator GetValidator(
-            this ValidatorAttribute attribute)
+            this AbeAttribute attribute)
         {
             if (attribute == null)
             {

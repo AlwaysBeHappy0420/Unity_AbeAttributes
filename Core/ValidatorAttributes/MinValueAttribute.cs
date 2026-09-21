@@ -3,7 +3,7 @@
 namespace AbeAttributes
 {
     [AttributeUsage(AttributeTargets.Field, AllowMultiple = false, Inherited = true)]
-    public class MinValueAttribute : ValidatorAttribute
+    public class MinValueAttribute : AbeAttribute
     {
         public float MinValue { get; private set; }
         public string MinValueName { get; private set; }

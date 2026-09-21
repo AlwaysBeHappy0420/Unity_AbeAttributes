@@ -2,7 +2,7 @@
 
 namespace AbeAttributes
 {
-    public abstract class EnableIfAttributeBase : MetaAttribute
+    public abstract class EnableIfAttributeBase : AbeAttribute
     {
         public string[] Conditions { get; private set; }
         public EConditionOperator ConditionOperator { get; private set; }

@@ -3,7 +3,7 @@
 namespace AbeAttributes
 {
     [AttributeUsage(AttributeTargets.Field, AllowMultiple = true, Inherited = true)]
-    public class OnValueChangedAttribute : MetaAttribute
+    public class OnValueChangedAttribute : AbeAttribute
     {
         public string CallbackName { get; private set; }
 

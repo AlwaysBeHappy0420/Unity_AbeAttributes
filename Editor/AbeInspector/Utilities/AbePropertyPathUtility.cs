@@ -22,14 +22,20 @@ namespace AbeAttributes.Editor
             object current = target;
             Type currentType = target.GetType();
 
-            string[] parts = propertyPath.Split('.');
+            string[] parts =
+                propertyPath.Split('.');
 
-            for (int i = 0; i < parts.Length; i++)
+            for (int i = 0;
+                 i < parts.Length;
+                 i++)
             {
                 if (current == null)
+                {
                     return null;
+                }
 
-                string part = parts[i];
+                string part =
+                    parts[i];
 
                 // ------------------------------------------------------------
                 // Array.data[index]
@@ -41,16 +47,18 @@ namespace AbeAttributes.Editor
                         parts[i + 1],
                         out int index))
                 {
-                    current = AbeCollectionUtility.GetElement(
-                        current,
-                        index);
+                    current =
+                        AbeCollectionUtility.GetElement(
+                            current,
+                            index);
 
                     if (current == null)
+                    {
                         return null;
+                    }
 
                     currentType =
-                        AbeCollectionUtility.GetElementType(
-                            currentType);
+                        current.GetType();
 
                     i++;
                     continue;
@@ -61,12 +69,14 @@ namespace AbeAttributes.Editor
                 // ------------------------------------------------------------
 
                 MemberInfo member =
-                    FindMember(
+                    FindDirectMember(
                         currentType,
                         part);
 
                 if (member == null)
+                {
                     return null;
+                }
 
                 current =
                     GetMemberValue(
@@ -74,10 +84,12 @@ namespace AbeAttributes.Editor
                         member);
 
                 if (current == null)
+                {
                     return null;
+                }
 
                 currentType =
-                    GetMemberType(member);
+                    current.GetType();
             }
 
             return current;
@@ -85,9 +97,104 @@ namespace AbeAttributes.Editor
 
         // ====================================================================
         // Find Member
+        //
+        // Supports:
+        //
+        //   "field"
+        //   "foo.bar"
+        //   "list.Array.data[0].bar"
+        //
         // ====================================================================
 
         internal static MemberInfo FindMember(
+            Type type,
+            string propertyPath)
+        {
+            if (type == null ||
+                string.IsNullOrEmpty(propertyPath))
+            {
+                return null;
+            }
+
+            string[] parts =
+                propertyPath.Split('.');
+
+            Type currentType =
+                type;
+
+            for (int i = 0;
+                 i < parts.Length;
+                 i++)
+            {
+                if (currentType == null)
+                {
+                    return null;
+                }
+
+                string part =
+                    parts[i];
+
+                // ------------------------------------------------------------
+                // Array.data[index]
+                //
+                // The actual element value is not available here,
+                // so resolve its declared element type.
+                // ------------------------------------------------------------
+
+                if (part == "Array" &&
+                    i + 1 < parts.Length &&
+                    TryParseDataIndex(
+                        parts[i + 1],
+                        out _))
+                {
+                    currentType =
+                        AbeCollectionUtility.GetElementType(
+                            currentType);
+
+                    if (currentType == null)
+                    {
+                        return null;
+                    }
+
+                    i++;
+                    continue;
+                }
+
+                // ------------------------------------------------------------
+                // Normal member
+                // ------------------------------------------------------------
+
+                MemberInfo member =
+                    FindDirectMember(
+                        currentType,
+                        part);
+
+                if (member == null)
+                {
+                    return null;
+                }
+
+                // ------------------------------------------------------------
+                // This is the requested member.
+                // ------------------------------------------------------------
+
+                if (i == parts.Length - 1)
+                {
+                    return member;
+                }
+
+                currentType =
+                    GetMemberType(member);
+            }
+
+            return null;
+        }
+
+        // ====================================================================
+        // Direct Member Lookup
+        // ====================================================================
+
+        private static MemberInfo FindDirectMember(
             Type type,
             string name)
         {
@@ -103,7 +210,8 @@ namespace AbeAttributes.Editor
                 BindingFlags.Public |
                 BindingFlags.NonPublic;
 
-            Type currentType = type;
+            Type currentType =
+                type;
 
             while (currentType != null)
             {
@@ -113,7 +221,9 @@ namespace AbeAttributes.Editor
                         flags);
 
                 if (field != null)
+                {
                     return field;
+                }
 
                 PropertyInfo property =
                     currentType.GetProperty(
@@ -121,9 +231,12 @@ namespace AbeAttributes.Editor
                         flags);
 
                 if (property != null)
+                {
                     return property;
+                }
 
-                currentType = currentType.BaseType;
+                currentType =
+                    currentType.BaseType;
             }
 
             return null;
@@ -137,15 +250,31 @@ namespace AbeAttributes.Editor
             object owner,
             MemberInfo member)
         {
+            if (owner == null ||
+                member == null)
+            {
+                return null;
+            }
+
             if (member is FieldInfo field)
-                return field.GetValue(owner);
+            {
+                return field.GetValue(
+                    owner);
+            }
 
             if (member is PropertyInfo property)
             {
-                if (!property.CanRead)
-                    return null;
+                MethodInfo getter =
+                    property.GetGetMethod(true);
 
-                return property.GetValue(owner);
+                if (getter == null)
+                {
+                    return null;
+                }
+
+                return getter.Invoke(
+                    owner,
+                    null);
             }
 
             return null;
@@ -159,10 +288,14 @@ namespace AbeAttributes.Editor
             MemberInfo member)
         {
             if (member is FieldInfo field)
+            {
                 return field.FieldType;
+            }
 
             if (member is PropertyInfo property)
+            {
                 return property.PropertyType;
+            }
 
             return null;
         }
@@ -178,7 +311,9 @@ namespace AbeAttributes.Editor
             index = -1;
 
             if (string.IsNullOrEmpty(value))
+            {
                 return false;
+            }
 
             if (!value.StartsWith("data[") ||
                 !value.EndsWith("]"))
@@ -195,6 +330,7 @@ namespace AbeAttributes.Editor
                 number,
                 out index);
         }
+
         // ====================================================================
         // Set Value
         // ====================================================================
@@ -210,7 +346,8 @@ namespace AbeAttributes.Editor
                 return false;
             }
 
-            string[] parts = propertyPath.Split('.');
+            string[] parts =
+                propertyPath.Split('.');
 
             return SetValueRecursive(
                 target,
@@ -242,7 +379,8 @@ namespace AbeAttributes.Editor
                 return false;
             }
 
-            string part = parts[index];
+            string part =
+                parts[index];
 
             // ------------------------------------------------------------
             // Array.data[index]
@@ -260,30 +398,22 @@ namespace AbeAttributes.Editor
                         elementIndex);
 
                 if (element == null)
+                {
                     return false;
+                }
 
                 Type elementType =
-                    AbeCollectionUtility.GetElementType(
-                        ownerType);
-
-                if (elementType == null)
-                    elementType = element.GetType();
-
-                bool success;
+                    element.GetType();
 
                 if (index + 2 >= parts.Length)
                 {
-                    // 直接设置 collection[index]
-                    success =
-                        AbeCollectionUtility.SetElement(
-                            owner,
-                            elementIndex,
-                            value);
-
-                    return success;
+                    return AbeCollectionUtility.SetElement(
+                        owner,
+                        elementIndex,
+                        value);
                 }
 
-                success =
+                bool success =
                     SetValueRecursive(
                         element,
                         elementType,
@@ -293,26 +423,21 @@ namespace AbeAttributes.Editor
                         out object updatedElement);
 
                 if (!success)
+                {
                     return false;
-
-                // --------------------------------------------------------
-                // Value type element 必须写回
-                // Reference type element 直接已经修改原对象
-                // --------------------------------------------------------
+                }
 
                 if (elementType.IsValueType)
                 {
-                    success =
-                        AbeCollectionUtility.SetElement(
-                            owner,
-                            elementIndex,
-                            updatedElement);
-
-                    if (!success)
-                        return false;
+                    return AbeCollectionUtility.SetElement(
+                        owner,
+                        elementIndex,
+                        updatedElement);
                 }
 
-                updatedOwner = owner;
+                updatedOwner =
+                    owner;
+
                 return true;
             }
 
@@ -321,12 +446,14 @@ namespace AbeAttributes.Editor
             // ------------------------------------------------------------
 
             MemberInfo member =
-                FindMember(
+                FindDirectMember(
                     ownerType,
                     part);
 
             if (member == null)
+            {
                 return false;
+            }
 
             Type memberType =
                 GetMemberType(member);
@@ -353,7 +480,9 @@ namespace AbeAttributes.Editor
                     member);
 
             if (child == null)
+            {
                 return false;
+            }
 
             bool childSuccess =
                 SetValueRecursive(
@@ -365,14 +494,12 @@ namespace AbeAttributes.Editor
                     out object updatedChild);
 
             if (!childSuccess)
+            {
                 return false;
+            }
 
             // ------------------------------------------------------------
-            // Struct / value type:
-            // child was boxed, so it must be written back.
-            //
-            // Reference type:
-            // modification already affects original object.
+            // Struct / value type
             // ------------------------------------------------------------
 
             if (memberType.IsValueType)
@@ -383,7 +510,9 @@ namespace AbeAttributes.Editor
                     updatedChild);
             }
 
-            updatedOwner = owner;
+            updatedOwner =
+                owner;
+
             return true;
         }
 
@@ -396,8 +525,11 @@ namespace AbeAttributes.Editor
             MemberInfo member,
             object value)
         {
-            if (owner == null || member == null)
+            if (owner == null ||
+                member == null)
+            {
                 return false;
+            }
 
             if (member is FieldInfo field)
             {
@@ -416,12 +548,17 @@ namespace AbeAttributes.Editor
 
             if (member is PropertyInfo property)
             {
-                if (!property.CanWrite)
-                    return false;
+                MethodInfo setter =
+                    property.GetSetMethod(true);
 
-                property.SetValue(
+                if (setter == null)
+                {
+                    return false;
+                }
+
+                setter.Invoke(
                     owner,
-                    value);
+                    new[] { value });
 
                 return true;
             }
@@ -429,9 +566,13 @@ namespace AbeAttributes.Editor
             return false;
         }
 
+        // ====================================================================
+        // Get Parent Object
+        // ====================================================================
+
         public static object GetParentObject(
-    object target,
-    string propertyPath)
+            object target,
+            string propertyPath)
         {
             if (target == null ||
                 string.IsNullOrEmpty(propertyPath))
@@ -439,20 +580,31 @@ namespace AbeAttributes.Editor
                 return null;
             }
 
-            string[] parts = propertyPath.Split('.');
+            string[] parts =
+                propertyPath.Split('.');
 
             if (parts.Length <= 1)
+            {
                 return target;
+            }
 
-            object current = target;
-            Type currentType = target.GetType();
+            object current =
+                target;
 
-            for (int i = 0; i < parts.Length - 1; i++)
+            Type currentType =
+                target.GetType();
+
+            for (int i = 0;
+                 i < parts.Length - 1;
+                 i++)
             {
                 if (current == null)
+                {
                     return null;
+                }
 
-                string part = parts[i];
+                string part =
+                    parts[i];
 
                 // ------------------------------------------------------------
                 // Array.data[index]
@@ -470,11 +622,12 @@ namespace AbeAttributes.Editor
                             elementIndex);
 
                     if (current == null)
+                    {
                         return null;
+                    }
 
                     currentType =
-                        AbeCollectionUtility.GetElementType(
-                            currentType);
+                        current.GetType();
 
                     i++;
                     continue;
@@ -485,12 +638,14 @@ namespace AbeAttributes.Editor
                 // ------------------------------------------------------------
 
                 MemberInfo member =
-                    FindMember(
+                    FindDirectMember(
                         currentType,
                         part);
 
                 if (member == null)
+                {
                     return null;
+                }
 
                 current =
                     GetMemberValue(
@@ -498,10 +653,12 @@ namespace AbeAttributes.Editor
                         member);
 
                 if (current == null)
+                {
                     return null;
+                }
 
                 currentType =
-                    GetMemberType(member);
+                    current.GetType();
             }
 
             return current;

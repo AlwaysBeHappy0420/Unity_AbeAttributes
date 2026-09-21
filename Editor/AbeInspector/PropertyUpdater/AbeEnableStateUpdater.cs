@@ -8,6 +8,10 @@ namespace AbeAttributes.Editor
         public override void Update(
             AbeProperty property)
         {
+            // ============================================================
+            // EnableIf
+            // ============================================================
+
             EnableIfAttribute enableIf =
                 property.GetAttribute<EnableIfAttribute>();
 
@@ -20,9 +24,11 @@ namespace AbeAttributes.Editor
                         enableIf.ConditionOperator,
                         enableIf.Inverted,
                         enableIf.EnumValue));
-
-                return;
             }
+
+            // ============================================================
+            // DisableIf
+            // ============================================================
 
             DisableIfAttribute disableIf =
                 property.GetAttribute<DisableIfAttribute>();
@@ -36,6 +42,18 @@ namespace AbeAttributes.Editor
                         disableIf.ConditionOperator,
                         disableIf.Inverted,
                         disableIf.EnumValue));
+            }
+
+            // ============================================================
+            // ReadOnly
+            // ============================================================
+
+            ReadOnlyAttribute readOnly =
+                property.GetAttribute<ReadOnlyAttribute>();
+
+            if (readOnly != null)
+            {
+                property.State.SetEnabled(false);
             }
         }
     }

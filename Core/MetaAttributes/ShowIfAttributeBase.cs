@@ -4,7 +4,7 @@ using AbeAttributes;
 namespace AbeAttributes
 {
     public class ShowIfAttributeBase
-        : MetaAttribute
+        : AbeAttribute
     {
         public string[] Conditions { get; private set; }
 

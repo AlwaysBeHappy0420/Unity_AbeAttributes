@@ -12,6 +12,18 @@ namespace AbeAttributes.Editor
             property.State.SetVisible(true);
 
             // ============================================================
+            // Unity HideInInspector
+            // ============================================================
+
+            if (property.Info?.MemberInfo != null &&
+                property.Info.MemberInfo.IsDefined(
+                    typeof(HideInInspector),
+                    true))
+            {
+                property.State.SetVisible(false);
+            }
+
+            // ============================================================
             // ShowIf / HideIf
             // ============================================================
 

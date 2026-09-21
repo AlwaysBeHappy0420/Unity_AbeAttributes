@@ -3,7 +3,7 @@
 namespace AbeAttributes
 {
     [AttributeUsage(AttributeTargets.Field, AllowMultiple = false, Inherited = true)]
-    public class ValidateInputAttribute : ValidatorAttribute
+    public class ValidateInputAttribute : AbeAttribute
     {
         public string CallbackName { get; private set; }
         public string Message { get; private set; }

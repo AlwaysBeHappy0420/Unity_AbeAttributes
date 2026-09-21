@@ -2,18 +2,20 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-
 using Mono.Cecil;
 using Mono.Cecil.Cil;
-
-using Unity.CompilationPipeline.Common.Diagnostics;
 using Unity.CompilationPipeline.Common.ILPostProcessing;
+using Unity.CompilationPipeline.Common.Diagnostics;
 
 namespace AbeAttributes.Editor
 {
-    public sealed class PopToConsoleILPostProcessor
-        : ILPostProcessor
+    public sealed class PopToConsoleILPostProcessor : ILPostProcessor
     {
+        public override ILPostProcessor GetInstance()
+        {
+            return this;
+        }
+
         private const string AttributeName =
             "AbeAttributes.PopToConsoleAttribute";
 
@@ -32,295 +34,2061 @@ namespace AbeAttributes.Editor
         private const string RuntimeBreakMethodName =
             "Break";
 
-        private const int ModeInvoke =
-            0;
-
-        private const int ModeGet =
-            1;
-
-        private const int ModeSet =
-            2;
-
-        private const int ModeManual =
-            3;
-
         private const string BreakPointName =
             "BreakPoint";
 
-        // ================================================================
-        // ILPostProcessor
-        // ================================================================
+        private const string ValuePathName =
+            "ValuePath";
 
-        public override ILPostProcessor GetInstance()
+        private const string CustomDebugMethodName =
+            "CustomDebugMethod";
+
+        private const int InvokeMode = 0;
+        private const int GetMode = 1;
+        private const int SetMode = 2;
+        private const int ManualMode = 3;
+
+        private sealed class PopConfiguration
         {
-            return this;
+            public int Mode;
+            public string BreakPoint;
+            public string ValuePath;
+            public string CustomDebugMethod;
+        }
+
+        private sealed class BreakPointMember
+        {
+            public FieldDefinition Field;
+            public PropertyDefinition Property;
+
+            public bool IsStatic
+            {
+                get
+                {
+                    if (Field != null)
+                    {
+                        return Field.IsStatic;
+                    }
+
+                    if (Property != null &&
+                        Property.GetMethod != null)
+                    {
+                        return Property.GetMethod.IsStatic;
+                    }
+
+                    return false;
+                }
+            }
         }
 
         public override bool WillProcess(
             ICompiledAssembly compiledAssembly)
         {
-            if (compiledAssembly == null)
-            {
-                return false;
-            }
-
-            string name =
-                compiledAssembly.Name;
-
-            if (string.IsNullOrEmpty(name))
-            {
-                return false;
-            }
-
-            return
-                name == "Assembly-CSharp" ||
-                name == "Assembly-CSharp-firstpass";
+            return true;
         }
 
         public override ILPostProcessResult Process(
             ICompiledAssembly compiledAssembly)
         {
+            var diagnostics =
+                new List<DiagnosticMessage>();
+
+            if (compiledAssembly == null ||
+                compiledAssembly.InMemoryAssembly == null)
+            {
+                return null;
+            }
+
             try
             {
-                return ProcessInternal(
-                    compiledAssembly);
+                DefaultAssemblyResolver resolver =
+                    CreateResolver(compiledAssembly);
+
+                byte[] peData =
+                    compiledAssembly.InMemoryAssembly.PeData;
+
+                byte[] pdbData =
+                    compiledAssembly.InMemoryAssembly.PdbData;
+
+                bool hasSymbols =
+                    pdbData != null &&
+                    pdbData.Length > 0;
+
+                using var peStream =
+                    new MemoryStream(peData);
+
+                using var pdbStream =
+                    hasSymbols
+                        ? new MemoryStream(pdbData)
+                        : null;
+
+                var readerParameters =
+                    new ReaderParameters
+                    {
+                        AssemblyResolver = resolver,
+                        ReadSymbols = hasSymbols,
+                        SymbolStream = pdbStream,
+                        SymbolReaderProvider =
+                            hasSymbols
+                                ? new PortablePdbReaderProvider()
+                                : null
+                    };
+
+                AssemblyDefinition assembly =
+                    AssemblyDefinition.ReadAssembly(
+                        peStream,
+                        readerParameters);
+
+                int changes =
+                    ProcessAssembly(
+                        assembly,
+                        resolver);
+
+                // Instrumentation can insert a substantial amount of IL between
+                // existing branch instructions and their targets. Short branch
+                // opcodes (br.s, brtrue.s, leave.s, etc.) only have an 8-bit
+                // displacement and can become invalid after instrumentation.
+                // Expand every short branch to its long form before Cecil writes
+                // the method body so the branch target remains valid.
+                if (changes > 0)
+                {
+                    ExpandShortBranches(assembly.MainModule);
+                }
+
+                if (changes == 0)
+                {
+                    return new ILPostProcessResult(
+                        new InMemoryAssembly(
+                            peData,
+                            pdbData),
+                        diagnostics);
+                }
+
+                using var outputPe =
+                    new MemoryStream();
+
+                using var outputPdb =
+                    hasSymbols
+                        ? new MemoryStream()
+                        : null;
+
+                var writerParameters =
+                    new WriterParameters
+                    {
+                        WriteSymbols = hasSymbols,
+                        SymbolStream = outputPdb,
+                        SymbolWriterProvider =
+                            hasSymbols
+                                ? new PortablePdbWriterProvider()
+                                : null
+                    };
+
+                assembly.Write(
+                    outputPe,
+                    writerParameters);
+
+                byte[] outputPdbData =
+                    hasSymbols
+                        ? outputPdb.ToArray()
+                        : null;
+
+                return new ILPostProcessResult(
+                    new InMemoryAssembly(
+                        outputPe.ToArray(),
+                        outputPdbData),
+                    diagnostics);
             }
             catch (Exception exception)
             {
-                return CreateErrorResult(
-                    compiledAssembly,
-                    exception);
+                diagnostics.Add(
+                    new DiagnosticMessage
+                    {
+                        DiagnosticType =
+                            DiagnosticType.Error,
+                        MessageData =
+                            "PopToConsole IL post-processing failed:\n" +
+                            exception
+                    });
+
+                return new ILPostProcessResult(
+                    null,
+                    diagnostics);
             }
         }
 
-        // ================================================================
-        // Process
-        // ================================================================
-
-        private ILPostProcessResult
-            ProcessInternal(
-                ICompiledAssembly compiledAssembly)
+        private static DefaultAssemblyResolver CreateResolver(
+            ICompiledAssembly compiledAssembly)
         {
-            DefaultAssemblyResolver resolver =
-                CreateResolver(
-                    compiledAssembly);
+            var resolver =
+                new DefaultAssemblyResolver();
 
-            bool hasSymbols =
-                compiledAssembly
-                    .InMemoryAssembly
-                    .PdbData != null
-                &&
-                compiledAssembly
-                    .InMemoryAssembly
-                    .PdbData
-                    .Length > 0;
-
-            using MemoryStream peInput =
-                new MemoryStream(
-                    compiledAssembly
-                        .InMemoryAssembly
-                        .PeData);
-
-            using MemoryStream pdbInput =
-                hasSymbols
-                    ? new MemoryStream(
-                        compiledAssembly
-                            .InMemoryAssembly
-                            .PdbData)
-                    : null;
-
-            ReaderParameters readerParameters =
-                new ReaderParameters
-                {
-                    AssemblyResolver =
-                        resolver,
-
-                    ReadingMode =
-                        ReadingMode.Immediate,
-
-                    ReadSymbols =
-                        hasSymbols
-                };
-
-            if (hasSymbols)
+            foreach (string reference
+                     in compiledAssembly.References)
             {
-                readerParameters.SymbolReaderProvider =
-                    new PortablePdbReaderProvider();
+                if (string.IsNullOrEmpty(reference))
+                {
+                    continue;
+                }
 
-                readerParameters.SymbolStream =
-                    pdbInput;
+                string directory =
+                    Path.GetDirectoryName(reference);
+
+                if (string.IsNullOrEmpty(directory))
+                {
+                    continue;
+                }
+
+                resolver.AddSearchDirectory(directory);
             }
 
-            AssemblyDefinition assembly =
-                AssemblyDefinition.ReadAssembly(
-                    peInput,
-                    readerParameters);
+            return resolver;
+        }
 
-            bool modified =
-                false;
+        private static void ExpandShortBranches(
+            ModuleDefinition module)
+        {
+            if (module == null)
+            {
+                return;
+            }
+
+            foreach (TypeDefinition type in module.Types)
+            {
+                ExpandShortBranchesRecursive(type);
+            }
+        }
+
+        private static void ExpandShortBranchesRecursive(
+            TypeDefinition type)
+        {
+            foreach (MethodDefinition method in type.Methods)
+            {
+                if (!method.HasBody)
+                {
+                    continue;
+                }
+
+                foreach (Instruction instruction in method.Body.Instructions)
+                {
+                    instruction.OpCode =
+                        ExpandShortBranchOpCode(
+                            instruction.OpCode);
+                }
+            }
+
+            foreach (TypeDefinition nested in type.NestedTypes)
+            {
+                ExpandShortBranchesRecursive(nested);
+            }
+        }
+
+        private static OpCode ExpandShortBranchOpCode(
+            OpCode opcode)
+        {
+            if (opcode == OpCodes.Br_S)
+                return OpCodes.Br;
+
+            if (opcode == OpCodes.Brfalse_S)
+                return OpCodes.Brfalse;
+
+            if (opcode == OpCodes.Brtrue_S)
+                return OpCodes.Brtrue;
+
+            if (opcode == OpCodes.Beq_S)
+                return OpCodes.Beq;
+
+            if (opcode == OpCodes.Bge_S)
+                return OpCodes.Bge;
+
+            if (opcode == OpCodes.Bge_Un_S)
+                return OpCodes.Bge_Un;
+
+            if (opcode == OpCodes.Bgt_S)
+                return OpCodes.Bgt;
+
+            if (opcode == OpCodes.Bgt_Un_S)
+                return OpCodes.Bgt_Un;
+
+            if (opcode == OpCodes.Ble_S)
+                return OpCodes.Ble;
+
+            if (opcode == OpCodes.Ble_Un_S)
+                return OpCodes.Ble_Un;
+
+            if (opcode == OpCodes.Blt_S)
+                return OpCodes.Blt;
+
+            if (opcode == OpCodes.Blt_Un_S)
+                return OpCodes.Blt_Un;
+
+            if (opcode == OpCodes.Bne_Un_S)
+                return OpCodes.Bne_Un;
+
+            if (opcode == OpCodes.Leave_S)
+                return OpCodes.Leave;
+
+            return opcode;
+        }
+
+        private static int ProcessAssembly(
+            AssemblyDefinition assembly,
+            IAssemblyResolver resolver)
+        {
+            if (assembly == null ||
+                assembly.MainModule == null)
+            {
+                return 0;
+            }
+
+            TypeDefinition runtimeType =
+                FindType(
+                    assembly,
+                    resolver,
+                    RuntimeTypeName);
+
+            if (runtimeType == null)
+            {
+                // This assembly does not reference AbeAttributes runtime code.
+                return 0;
+            }
+
+            MethodReference runtimeInvoke =
+                FindRuntimeMethod(
+                    assembly,
+                    resolver,
+                    runtimeType,
+                    RuntimeInvokeMethodName,
+                    2);
+
+            MethodReference runtimeGet3 =
+                FindRuntimeMethod(
+                    assembly,
+                    resolver,
+                    runtimeType,
+                    RuntimeGetMethodName,
+                    3);
+
+            MethodReference runtimeGet4 =
+                FindRuntimeMethod(
+                    assembly,
+                    resolver,
+                    runtimeType,
+                    RuntimeGetMethodName,
+                    4);
+
+            MethodReference runtimeSet3 =
+                FindRuntimeMethod(
+                    assembly,
+                    resolver,
+                    runtimeType,
+                    RuntimeSetMethodName,
+                    3);
+
+            MethodReference runtimeSet4 =
+                FindRuntimeMethod(
+                    assembly,
+                    resolver,
+                    runtimeType,
+                    RuntimeSetMethodName,
+                    4);
+
+            MethodReference runtimeBreak =
+                FindRuntimeMethod(
+                    assembly,
+                    resolver,
+                    runtimeType,
+                    RuntimeBreakMethodName,
+                    0);
+
+            if (runtimeInvoke == null ||
+                runtimeGet3 == null ||
+                runtimeGet4 == null ||
+                runtimeSet3 == null ||
+                runtimeSet4 == null ||
+                runtimeBreak == null)
+            {
+                throw new InvalidOperationException(
+                    "PopToConsoleRuntime methods could not be resolved.");
+            }
+
+            int changes = 0;
 
             foreach (TypeDefinition type
-                     in GetAllTypes(
-                         assembly.MainModule))
+                     in assembly.MainModule.Types.ToList())
             {
-                // --------------------------------------------------------
-                // Methods
-                // --------------------------------------------------------
+                changes +=
+                    ProcessType(
+                        assembly.MainModule,
+                        resolver,
+                        type,
+                        runtimeInvoke,
+                        runtimeGet3,
+                        runtimeGet4,
+                        runtimeSet3,
+                        runtimeSet4,
+                        runtimeBreak);
+            }
 
-                foreach (MethodDefinition method
-                         in type.Methods)
+            return changes;
+        }
+
+        private static int ProcessType(
+            ModuleDefinition module,
+            IAssemblyResolver resolver,
+            TypeDefinition type,
+            MethodReference runtimeInvoke,
+            MethodReference runtimeGet3,
+            MethodReference runtimeGet4,
+            MethodReference runtimeSet3,
+            MethodReference runtimeSet4,
+            MethodReference runtimeBreak)
+        {
+            if (type == null)
+            {
+                return 0;
+            }
+
+            int changes = 0;
+
+            foreach (MethodDefinition method
+                     in type.Methods.ToList())
+            {
+                changes +=
+                    ProcessMethod(
+                        module,
+                        resolver,
+                        method,
+                        runtimeInvoke,
+                        runtimeBreak);
+            }
+
+            foreach (PropertyDefinition property
+                     in type.Properties.ToList())
+            {
+                changes +=
+                    ProcessProperty(
+                        module,
+                        resolver,
+                        property,
+                        runtimeGet3,
+                        runtimeGet4,
+                        runtimeSet3,
+                        runtimeSet4,
+                        runtimeBreak);
+            }
+
+            foreach (FieldDefinition field
+                     in type.Fields.ToList())
+            {
+                changes +=
+                    ProcessField(
+                        module,
+                        resolver,
+                        field,
+                        runtimeGet3,
+                        runtimeGet4,
+                        runtimeSet3,
+                        runtimeSet4,
+                        runtimeBreak);
+            }
+
+            foreach (TypeDefinition nestedType
+                     in type.NestedTypes.ToList())
+            {
+                changes +=
+                    ProcessType(
+                        module,
+                        resolver,
+                        nestedType,
+                        runtimeInvoke,
+                        runtimeGet3,
+                        runtimeGet4,
+                        runtimeSet3,
+                        runtimeSet4,
+                        runtimeBreak);
+            }
+
+            return changes;
+        }
+
+        private static int ProcessMethod(
+            ModuleDefinition module,
+            IAssemblyResolver resolver,
+            MethodDefinition method,
+            MethodReference runtimeInvoke,
+            MethodReference runtimeBreak)
+        {
+            if (method == null ||
+                method.IsConstructor ||
+                !method.HasBody)
+            {
+                return 0;
+            }
+
+            PopConfiguration configuration =
+                GetConfiguration(
+                    method.CustomAttributes,
+                    InvokeMode);
+
+            if (configuration == null)
+            {
+                return 0;
+            }
+
+            if (method.IsAbstract ||
+                method.IsPInvokeImpl)
+            {
+                return 0;
+            }
+
+            ILProcessor il =
+                method.Body.GetILProcessor();
+
+            Instruction first =
+                method.Body.Instructions.FirstOrDefault();
+
+            if (first == null)
+            {
+                return 0;
+            }
+
+            MethodReference debugMethod =
+                ResolveDebugMethod(
+                    module,
+                    method.DeclaringType,
+                    method.DeclaringType,
+                    configuration,
+                    2,
+                    method.IsStatic,
+                    runtimeInvoke);
+
+            EmitInvokeDebugCall(
+                il,
+                first,
+                method.DeclaringType.FullName,
+                method.Name,
+                debugMethod);
+
+            if (!string.IsNullOrEmpty(
+                    configuration.BreakPoint) &&
+                !method.IsStatic)
+            {
+                EmitBreakPointFromArgument(
+                    module,
+                    resolver,
+                    method,
+                    il,
+                    new ArgumentSource(0),
+                    method.DeclaringType,
+                    configuration.BreakPoint,
+                    runtimeBreak,
+                    first);
+            }
+
+            return 1;
+        }
+
+        private static int ProcessProperty(
+            ModuleDefinition module,
+            IAssemblyResolver resolver,
+            PropertyDefinition property,
+            MethodReference runtimeGet3,
+            MethodReference runtimeGet4,
+            MethodReference runtimeSet3,
+            MethodReference runtimeSet4,
+            MethodReference runtimeBreak)
+        {
+            if (property == null)
+            {
+                return 0;
+            }
+
+            int changes = 0;
+
+            PopConfiguration getConfiguration =
+                GetConfiguration(
+                    property.CustomAttributes,
+                    GetMode);
+
+            if (getConfiguration != null &&
+                property.GetMethod != null)
+            {
+                changes +=
+                    InstrumentPropertyGetter(
+                        module,
+                        resolver,
+                        property,
+                        property.GetMethod,
+                        getConfiguration,
+                        runtimeGet3,
+                        runtimeGet4,
+                        runtimeBreak);
+            }
+
+            PopConfiguration setConfiguration =
+                GetConfiguration(
+                    property.CustomAttributes,
+                    SetMode);
+
+            if (setConfiguration != null &&
+                property.SetMethod != null)
+            {
+                changes +=
+                    InstrumentPropertySetter(
+                        module,
+                        resolver,
+                        property,
+                        property.SetMethod,
+                        setConfiguration,
+                        runtimeSet3,
+                        runtimeSet4,
+                        runtimeBreak);
+            }
+
+            return changes;
+        }
+
+        private static int InstrumentPropertyGetter(
+            ModuleDefinition module,
+            IAssemblyResolver resolver,
+            PropertyDefinition property,
+            MethodDefinition getter,
+            PopConfiguration configuration,
+            MethodReference runtimeGet3,
+            MethodReference runtimeGet4,
+            MethodReference runtimeBreak)
+        {
+            if (getter.IsAbstract ||
+                getter.IsPInvokeImpl ||
+                !getter.HasBody ||
+                getter.ReturnType.IsByReference)
+            {
+                return 0;
+            }
+
+            MethodBody body = getter.Body;
+            ILProcessor il = body.GetILProcessor();
+
+            VariableDefinition valueLocal =
+                new VariableDefinition(
+                    getter.ReturnType);
+
+            body.Variables.Add(valueLocal);
+            body.InitLocals = true;
+
+            MethodReference runtimeMethod =
+                ResolveDebugMethod(
+                    module,
+                    property.DeclaringType,
+                    getter.DeclaringType,
+                    configuration,
+                    GetValueRuntimeParameterCount(
+                        configuration.ValuePath),
+                    getter.IsStatic,
+                    FindRuntimeMethodByConfiguration(
+                        configuration.ValuePath,
+                        runtimeGet3,
+                        runtimeGet4));
+
+            List<Instruction> returns =
+                body.Instructions
+                    .Where(x => x.OpCode == OpCodes.Ret)
+                    .ToList();
+
+            foreach (Instruction ret in returns)
+            {
+                il.InsertBefore(
+                    ret,
+                    il.Create(
+                        OpCodes.Stloc,
+                        valueLocal));
+
+                EmitGetOrSetCall(
+                    module,
+                    il,
+                    ret,
+                    property.DeclaringType.FullName,
+                    property.Name,
+                    valueLocal,
+                    getter.ReturnType,
+                    configuration.ValuePath,
+                    runtimeMethod);
+
+                if (!string.IsNullOrEmpty(
+                        configuration.BreakPoint))
                 {
-                    if (!ShouldProcess(method))
+                    EmitBreakPointFromLocal(
+                        module,
+                        resolver,
+                        getter,
+                        il,
+                        ret,
+                        valueLocal,
+                        getter.ReturnType,
+                        configuration.BreakPoint,
+                        runtimeBreak);
+                }
+
+                il.InsertBefore(
+                    ret,
+                    il.Create(
+                        OpCodes.Ldloc,
+                        valueLocal));
+            }
+
+            return returns.Count > 0 ? 1 : 0;
+        }
+
+        private static int InstrumentPropertySetter(
+            ModuleDefinition module,
+            IAssemblyResolver resolver,
+            PropertyDefinition property,
+            MethodDefinition setter,
+            PopConfiguration configuration,
+            MethodReference runtimeSet3,
+            MethodReference runtimeSet4,
+            MethodReference runtimeBreak)
+        {
+            if (setter.IsAbstract ||
+                setter.IsPInvokeImpl ||
+                !setter.HasBody ||
+                setter.Parameters.Count == 0 ||
+                setter.Parameters.Last().ParameterType.IsByReference)
+            {
+                return 0;
+            }
+
+            ILProcessor il =
+                setter.Body.GetILProcessor();
+
+            Instruction first =
+                setter.Body.Instructions.FirstOrDefault();
+
+            if (first == null)
+            {
+                return 0;
+            }
+
+            ParameterDefinition valueParameter =
+                setter.Parameters.Last();
+
+            MethodReference runtimeMethod =
+                ResolveDebugMethod(
+                    module,
+                    property.DeclaringType,
+                    setter.DeclaringType,
+                    configuration,
+                    GetValueRuntimeParameterCount(
+                        configuration.ValuePath),
+                    setter.IsStatic,
+                    FindRuntimeMethodByConfiguration(
+                        configuration.ValuePath,
+                        runtimeSet3,
+                        runtimeSet4));
+
+            EmitGetOrSetCallFromArgument(
+                module,
+                il,
+                first,
+                property.DeclaringType.FullName,
+                property.Name,
+                valueParameter,
+                property.PropertyType,
+                configuration.ValuePath,
+                runtimeMethod);
+
+            if (!string.IsNullOrEmpty(
+                    configuration.BreakPoint))
+            {
+                EmitBreakPointFromArgument(
+                    module,
+                    resolver,
+                    setter,
+                    il,
+                    new ArgumentSource(
+                        valueParameter),
+                    property.PropertyType,
+                    configuration.BreakPoint,
+                    runtimeBreak,
+                    first);
+            }
+
+            return 1;
+        }
+
+        private static int ProcessField(
+            ModuleDefinition module,
+            IAssemblyResolver resolver,
+            FieldDefinition field,
+            MethodReference runtimeGet3,
+            MethodReference runtimeGet4,
+            MethodReference runtimeSet3,
+            MethodReference runtimeSet4,
+            MethodReference runtimeBreak)
+        {
+            IList<MethodDefinition> methods =
+                GetAllMethods(module);
+
+            int changes = 0;
+
+            foreach (MethodDefinition method
+                     in methods)
+            {
+                if (method == null ||
+                    !method.HasBody ||
+                    method.IsAbstract ||
+                    method.IsPInvokeImpl)
+                {
+                    continue;
+                }
+
+                if (method.DeclaringType == null)
+                {
+                    continue;
+                }
+
+                changes +=
+                    InstrumentFieldUsages(
+                        module,
+                        resolver,
+                        method,
+                        field,
+                        runtimeGet3,
+                        runtimeGet4,
+                        runtimeSet3,
+                        runtimeSet4,
+                        runtimeBreak);
+            }
+
+            // Field processing is based on actual IL field access. Processing each
+            // field from each declaring type is intentionally simple and preserves
+            // support for accesses emitted from other types in the same assembly.
+            return changes;
+        }
+
+        private static IList<MethodDefinition> GetAllMethods(
+            ModuleDefinition module)
+        {
+            var result =
+                new List<MethodDefinition>();
+
+            foreach (TypeDefinition type
+                     in module.Types)
+            {
+                CollectMethodsRecursive(
+                    type,
+                    result);
+            }
+
+            return result;
+        }
+
+        private static void CollectMethodsRecursive(
+            TypeDefinition type,
+            List<MethodDefinition> result)
+        {
+            result.AddRange(type.Methods);
+
+            foreach (TypeDefinition nested
+                     in type.NestedTypes)
+            {
+                CollectMethodsRecursive(
+                    nested,
+                    result);
+            }
+        }
+
+        private static int InstrumentFieldUsages(
+            ModuleDefinition module,
+            IAssemblyResolver resolver,
+            MethodDefinition method,
+            FieldDefinition targetField,
+            MethodReference runtimeGet3,
+            MethodReference runtimeGet4,
+            MethodReference runtimeSet3,
+            MethodReference runtimeSet4,
+            MethodReference runtimeBreak)
+        {
+            List<Instruction> instructions =
+                method.Body.Instructions.ToList();
+
+            int changes = 0;
+
+            foreach (Instruction instruction in instructions)
+            {
+                if (instruction.OpCode == OpCodes.Ldfld ||
+                    instruction.OpCode == OpCodes.Ldsfld)
+                {
+                    FieldReference fieldReference =
+                        instruction.Operand as FieldReference;
+
+                    if (!IsTargetField(
+                            fieldReference,
+                            targetField))
                     {
                         continue;
                     }
 
                     PopConfiguration configuration =
-                        FindConfiguration(
-                            method,
-                            ModeInvoke);
+                        GetConfiguration(
+                            targetField.CustomAttributes,
+                            GetMode);
 
                     if (configuration == null)
                     {
                         continue;
                     }
 
-                    if (AlreadyInjected(
-                            method,
-                            RuntimeInvokeMethodName))
+                    if (targetField.FieldType.IsByReference)
                     {
                         continue;
                     }
 
-                    InjectInvoke(
-                        assembly,
-                        resolver,
-                        type,
-                        method,
-                        configuration);
+                    VariableDefinition valueLocal =
+                        new VariableDefinition(
+                            targetField.FieldType);
 
-                    modified = true;
+                    method.Body.Variables.Add(valueLocal);
+                    method.Body.InitLocals = true;
+
+                    ILProcessor il =
+                        method.Body.GetILProcessor();
+
+                    // The value produced by ldfld/ldsfld must be captured first.
+                    // Keep the anchor on the newly inserted stloc so every injected
+                    // instruction is emitted immediately after the captured value.
+                    Instruction valueStore =
+                        il.Create(
+                            OpCodes.Stloc,
+                            valueLocal);
+
+                    il.InsertAfter(
+                        instruction,
+                        valueStore);
+
+                    Instruction anchor =
+                        valueStore;
+
+                    MethodReference runtimeMethod =
+                        ResolveDebugMethod(
+                            module,
+                            targetField.DeclaringType,
+                            method.DeclaringType,
+                            configuration,
+                            GetValueRuntimeParameterCount(
+                                configuration.ValuePath),
+                            method.IsStatic,
+                            FindRuntimeMethodByConfiguration(
+                                configuration.ValuePath,
+                                runtimeGet3,
+                                runtimeGet4));
+
+                    EmitGetOrSetCallAfterAnchor(
+                        module,
+                        il,
+                        ref anchor,
+                        targetField.DeclaringType.FullName,
+                        targetField.Name,
+                        valueLocal,
+                        targetField.FieldType,
+                        configuration.ValuePath,
+                        runtimeMethod);
+
+                    if (!string.IsNullOrEmpty(
+                            configuration.BreakPoint))
+                    {
+                        EmitBreakPointAfterAnchor(
+                            module,
+                            resolver,
+                            method,
+                            il,
+                            ref anchor,
+                            valueLocal,
+                            targetField.FieldType,
+                            configuration.BreakPoint,
+                            runtimeBreak);
+                    }
+
+                    il.InsertAfter(
+                        anchor,
+                        il.Create(
+                            OpCodes.Ldloc,
+                            valueLocal));
+
+                    changes++;
+                    continue;
                 }
 
-                // --------------------------------------------------------
-                // Properties
-                // --------------------------------------------------------
-
-                foreach (PropertyDefinition property
-                         in type.Properties)
+                if (instruction.OpCode == OpCodes.Stfld ||
+                    instruction.OpCode == OpCodes.Stsfld)
                 {
-                    // ----------------------------------------------------
-                    // Get
-                    // ----------------------------------------------------
+                    FieldReference fieldReference =
+                        instruction.Operand as FieldReference;
 
-                    PopConfiguration getConfiguration =
-                        FindConfiguration(
-                            property,
-                            ModeGet);
-
-                    if (getConfiguration != null)
+                    if (!IsTargetField(
+                            fieldReference,
+                            targetField))
                     {
-                        MethodDefinition getter =
-                            property.GetMethod;
-
-                        if (getter != null &&
-                            ShouldProcess(getter) &&
-                            !AlreadyInjected(
-                                getter,
-                                RuntimeGetMethodName))
-                        {
-                            InjectGet(
-                                assembly,
-                                resolver,
-                                type,
-                                property,
-                                getter,
-                                getConfiguration);
-
-                            modified = true;
-                        }
+                        continue;
                     }
 
-                    // ----------------------------------------------------
-                    // Set
-                    // ----------------------------------------------------
+                    PopConfiguration configuration =
+                        GetConfiguration(
+                            targetField.CustomAttributes,
+                            SetMode);
 
-                    PopConfiguration setConfiguration =
-                        FindConfiguration(
-                            property,
-                            ModeSet);
-
-                    if (setConfiguration != null)
+                    if (configuration == null)
                     {
-                        MethodDefinition setter =
-                            property.SetMethod;
-
-                        if (setter != null &&
-                            ShouldProcess(setter) &&
-                            !AlreadyInjected(
-                                setter,
-                                RuntimeSetMethodName))
-                        {
-                            InjectSet(
-                                assembly,
-                                resolver,
-                                type,
-                                property,
-                                setter,
-                                setConfiguration);
-
-                            modified = true;
-                        }
+                        continue;
                     }
+
+                    if (targetField.FieldType.IsByReference)
+                    {
+                        continue;
+                    }
+
+                    VariableDefinition valueLocal =
+                        new VariableDefinition(
+                            targetField.FieldType);
+
+                    method.Body.Variables.Add(valueLocal);
+                    method.Body.InitLocals = true;
+
+                    VariableDefinition ownerLocal =
+                        null;
+
+                    bool isStatic =
+                        instruction.OpCode == OpCodes.Stsfld;
+
+                    if (!isStatic)
+                    {
+                        TypeReference ownerType =
+                            targetField.DeclaringType;
+
+                        if (ownerType.IsValueType)
+                        {
+                            ownerType =
+                                new ByReferenceType(
+                                    ownerType);
+                        }
+
+                        ownerLocal =
+                            new VariableDefinition(
+                                ownerType);
+
+                        method.Body.Variables.Add(
+                            ownerLocal);
+                    }
+
+                    ILProcessor il =
+                        method.Body.GetILProcessor();
+
+                    Instruction insertionPoint =
+                        GetPrefixStart(
+                            instruction);
+
+                    Instruction anchor =
+                        il.Create(OpCodes.Nop);
+
+                    il.InsertBefore(
+                        insertionPoint,
+                        anchor);
+
+                    InsertAfter(
+                        il,
+                        ref anchor,
+                        il.Create(
+                            OpCodes.Stloc,
+                            valueLocal));
+
+                    if (!isStatic)
+                    {
+                        InsertAfter(
+                            il,
+                            ref anchor,
+                            il.Create(
+                                OpCodes.Stloc,
+                                ownerLocal));
+                    }
+
+                    MethodReference runtimeMethod =
+                        ResolveDebugMethod(
+                            module,
+                            targetField.DeclaringType,
+                            method.DeclaringType,
+                            configuration,
+                            GetValueRuntimeParameterCount(
+                                configuration.ValuePath),
+                            method.IsStatic,
+                            FindRuntimeMethodByConfiguration(
+                                configuration.ValuePath,
+                                runtimeSet3,
+                                runtimeSet4));
+
+                    // When the field is instance-based, the owner has already been
+                    // moved to ownerLocal above. The runtime callback only needs the
+                    // field value, so the owner does not need to be kept on the stack.
+                    EmitGetOrSetCallAfterAnchor(
+                        module,
+                        il,
+                        ref anchor,
+                        targetField.DeclaringType.FullName,
+                        targetField.Name,
+                        valueLocal,
+                        targetField.FieldType,
+                        configuration.ValuePath,
+                        runtimeMethod);
+
+                    if (!string.IsNullOrEmpty(
+                            configuration.BreakPoint))
+                    {
+                        EmitBreakPointAfterAnchor(
+                            module,
+                            resolver,
+                            method,
+                            il,
+                            ref anchor,
+                            valueLocal,
+                            targetField.FieldType,
+                            configuration.BreakPoint,
+                            runtimeBreak);
+                    }
+
+                    if (!isStatic)
+                    {
+                        InsertAfter(
+                            il,
+                            ref anchor,
+                            il.Create(
+                                OpCodes.Ldloc,
+                                ownerLocal));
+
+                        InsertAfter(
+                            il,
+                            ref anchor,
+                            il.Create(
+                                OpCodes.Ldloc,
+                                valueLocal));
+                    }
+                    else
+                    {
+                        InsertAfter(
+                            il,
+                            ref anchor,
+                            il.Create(
+                                OpCodes.Ldloc,
+                                valueLocal));
+                    }
+
+                    changes++;
                 }
             }
 
-            if (!modified)
+            return changes;
+        }
+
+        private static bool IsTargetField(
+            FieldReference fieldReference,
+            FieldDefinition targetField)
+        {
+            if (fieldReference == null ||
+                targetField == null)
             {
-                return new ILPostProcessResult(
-                    compiledAssembly.InMemoryAssembly,
-                    new List<DiagnosticMessage>());
+                return false;
             }
 
-            return WriteAssembly(
-                assembly,
-                compiledAssembly);
+            try
+            {
+                FieldDefinition resolved =
+                    fieldReference.Resolve();
+
+                if (resolved != null)
+                {
+                    return
+                        resolved.MetadataToken ==
+                        targetField.MetadataToken &&
+                        resolved.DeclaringType.FullName ==
+                        targetField.DeclaringType.FullName;
+                }
+            }
+            catch
+            {
+                // Fall back to a metadata-name comparison below.
+            }
+
+            return
+                fieldReference.Name == targetField.Name &&
+                fieldReference.DeclaringType.FullName ==
+                targetField.DeclaringType.FullName;
         }
 
-        // ================================================================
-        // Configuration
-        // ================================================================
-
-        private sealed class PopConfiguration
+        private static void EmitGetOrSetCall(
+            ModuleDefinition module,
+            ILProcessor il,
+            Instruction before,
+            string typeName,
+            string memberName,
+            VariableDefinition valueLocal,
+            TypeReference valueType,
+            string valuePath,
+            MethodReference runtimeMethod)
         {
-            public int Mode;
+            if (runtimeMethod.Parameters.Count == 0)
+            {
+                EmitLoadCustomInstanceIfNeeded(
+                    il,
+                    before,
+                    runtimeMethod);
 
-            public string BreakPoint;
+                il.InsertBefore(
+                    before,
+                    il.Create(
+                        OpCodes.Call,
+                        runtimeMethod));
+
+                return;
+            }
+
+            il.InsertBefore(
+                before,
+                il.Create(
+                    OpCodes.Ldstr,
+                    typeName));
+
+            il.InsertBefore(
+                before,
+                il.Create(
+                    OpCodes.Ldstr,
+                    memberName));
+
+            il.InsertBefore(
+                before,
+                il.Create(
+                    OpCodes.Ldloc,
+                    valueLocal));
+
+            BoxIfNeeded(
+                il,
+                before,
+                valueType);
+
+            if (!string.IsNullOrEmpty(valuePath))
+            {
+                il.InsertBefore(
+                    before,
+                    il.Create(
+                        OpCodes.Ldstr,
+                        valuePath));
+            }
+
+            il.InsertBefore(
+                before,
+                il.Create(
+                    OpCodes.Call,
+                    runtimeMethod));
         }
 
-        private static PopConfiguration
-            FindConfiguration(
-                MethodDefinition method,
-                int targetMode)
+        private static void EmitGetOrSetCallAfterAnchor(
+            ModuleDefinition module,
+            ILProcessor il,
+            ref Instruction anchor,
+            string typeName,
+            string memberName,
+            VariableDefinition valueLocal,
+            TypeReference valueType,
+            string valuePath,
+            MethodReference runtimeMethod)
         {
-            if (!method.HasCustomAttributes)
+            if (runtimeMethod.Parameters.Count == 0)
+            {
+                EmitLoadCustomInstanceAfterAnchor(
+                    il,
+                    ref anchor,
+                    runtimeMethod);
+
+                InsertAfter(
+                    il,
+                    ref anchor,
+                    il.Create(
+                        OpCodes.Call,
+                        runtimeMethod));
+
+                return;
+            }
+
+            InsertAfter(
+                il,
+                ref anchor,
+                il.Create(
+                    OpCodes.Ldstr,
+                    typeName));
+
+            InsertAfter(
+                il,
+                ref anchor,
+                il.Create(
+                    OpCodes.Ldstr,
+                    memberName));
+
+            InsertAfter(
+                il,
+                ref anchor,
+                il.Create(
+                    OpCodes.Ldloc,
+                    valueLocal));
+
+            if (valueType.IsValueType)
+            {
+                InsertAfter(
+                    il,
+                    ref anchor,
+                    il.Create(
+                        OpCodes.Box,
+                        module.ImportReference(valueType)));
+            }
+
+            if (!string.IsNullOrEmpty(valuePath))
+            {
+                InsertAfter(
+                    il,
+                    ref anchor,
+                    il.Create(
+                        OpCodes.Ldstr,
+                        valuePath));
+            }
+
+            InsertAfter(
+                il,
+                ref anchor,
+                il.Create(
+                    OpCodes.Call,
+                    runtimeMethod));
+        }
+
+        private static void EmitGetOrSetCallFromArgument(
+            ModuleDefinition module,
+            ILProcessor il,
+            Instruction before,
+            string typeName,
+            string memberName,
+            ParameterDefinition valueParameter,
+            TypeReference valueType,
+            string valuePath,
+            MethodReference runtimeMethod)
+        {
+            if (runtimeMethod.Parameters.Count == 0)
+            {
+                EmitLoadCustomInstanceIfNeeded(
+                    il,
+                    before,
+                    runtimeMethod);
+
+                il.InsertBefore(
+                    before,
+                    il.Create(
+                        OpCodes.Call,
+                        runtimeMethod));
+
+                return;
+            }
+
+            il.InsertBefore(
+                before,
+                il.Create(
+                    OpCodes.Ldstr,
+                    typeName));
+
+            il.InsertBefore(
+                before,
+                il.Create(
+                    OpCodes.Ldstr,
+                    memberName));
+
+            il.InsertBefore(
+                before,
+                il.Create(
+                    OpCodes.Ldarg,
+                    valueParameter));
+
+            BoxIfNeeded(
+                il,
+                before,
+                valueType);
+
+            if (!string.IsNullOrEmpty(valuePath))
+            {
+                il.InsertBefore(
+                    before,
+                    il.Create(
+                        OpCodes.Ldstr,
+                        valuePath));
+            }
+
+            il.InsertBefore(
+                before,
+                il.Create(
+                    OpCodes.Call,
+                    runtimeMethod));
+        }
+
+        private static void EmitInvokeDebugCall(
+            ILProcessor il,
+            Instruction before,
+            string typeName,
+            string memberName,
+            MethodReference debugMethod)
+        {
+            if (debugMethod.Parameters.Count == 0)
+            {
+                EmitLoadCustomInstanceIfNeeded(
+                    il,
+                    before,
+                    debugMethod);
+
+                il.InsertBefore(
+                    before,
+                    il.Create(
+                        OpCodes.Call,
+                        debugMethod));
+
+                return;
+            }
+
+            il.InsertBefore(
+                before,
+                il.Create(
+                    OpCodes.Ldstr,
+                    typeName));
+
+            il.InsertBefore(
+                before,
+                il.Create(
+                    OpCodes.Ldstr,
+                    memberName));
+
+            EmitLoadCustomInstanceIfNeeded(
+                il,
+                before,
+                debugMethod);
+
+            // Static/default Invoke receives string/string. For an instance
+            // custom method with parameters, the current design does not allow
+            // that form; custom methods are intentionally parameterless.
+            il.InsertBefore(
+                before,
+                il.Create(
+                    OpCodes.Call,
+                    debugMethod));
+        }
+
+        private static void EmitLoadCustomInstanceAfterAnchor(
+            ILProcessor il,
+            ref Instruction anchor,
+            MethodReference method)
+        {
+            MethodDefinition resolved =
+                method?.Resolve();
+
+            if (resolved == null ||
+                resolved.IsStatic)
+            {
+                return;
+            }
+
+            InsertAfter(
+                il,
+                ref anchor,
+                il.Create(
+                    OpCodes.Ldarg_0));
+        }
+
+        private static void EmitLoadCustomInstanceIfNeeded(
+            ILProcessor il,
+            Instruction before,
+            MethodReference method)
+        {
+            MethodDefinition resolved =
+                method?.Resolve();
+
+            if (resolved == null ||
+                resolved.IsStatic)
+            {
+                return;
+            }
+
+            il.InsertBefore(
+                before,
+                il.Create(
+                    OpCodes.Ldarg_0));
+        }
+
+        private static void BoxIfNeeded(
+            ILProcessor il,
+            Instruction before,
+            TypeReference type)
+        {
+            if (type == null)
+            {
+                return;
+            }
+
+            if (!type.IsValueType &&
+                !type.IsGenericParameter)
+            {
+                return;
+            }
+
+            il.InsertBefore(
+                before,
+                il.Create(
+                    OpCodes.Box,
+                    type));
+        }
+
+        private static int GetValueRuntimeParameterCount(
+            string valuePath)
+        {
+            return string.IsNullOrEmpty(valuePath)
+                ? 3
+                : 4;
+        }
+
+        private static MethodReference
+            FindRuntimeMethodByConfiguration(
+                string valuePath,
+                MethodReference runtime3,
+                MethodReference runtime4)
+        {
+            return GetValueRuntimeParameterCount(valuePath) == 3
+                ? runtime3
+                : runtime4;
+        }
+
+        private static void EmitBreakPointFromArgument(
+            ModuleDefinition module,
+            IAssemblyResolver resolver,
+            MethodDefinition method,
+            ILProcessor il,
+            ArgumentSource source,
+            TypeReference valueType,
+            string breakPoint,
+            MethodReference runtimeBreak,
+            Instruction before)
+        {
+            BreakPointMember member =
+                FindBreakPointMember(
+                    valueType,
+                    breakPoint,
+                    resolver);
+
+            if (member == null)
+            {
+                return;
+            }
+
+            var end =
+                il.Create(OpCodes.Nop);
+
+            EmitBreakPointMemberTest(
+                module,
+                il,
+                before,
+                source,
+                valueType,
+                member,
+                runtimeBreak,
+                end);
+
+            il.InsertBefore(
+                before,
+                end);
+        }
+
+        private static void EmitBreakPointFromLocal(
+            ModuleDefinition module,
+            IAssemblyResolver resolver,
+            MethodDefinition method,
+            ILProcessor il,
+            Instruction before,
+            VariableDefinition local,
+            TypeReference valueType,
+            string breakPoint,
+            MethodReference runtimeBreak)
+        {
+            BreakPointMember member =
+                FindBreakPointMember(
+                    valueType,
+                    breakPoint,
+                    resolver);
+
+            if (member == null)
+            {
+                return;
+            }
+
+            var end =
+                il.Create(OpCodes.Nop);
+
+            EmitBreakPointMemberTest(
+                module,
+                il,
+                before,
+                new LocalSource(local),
+                valueType,
+                member,
+                runtimeBreak,
+                end);
+
+            il.InsertBefore(
+                before,
+                end);
+        }
+
+        private static void EmitBreakPointAfterAnchor(
+            ModuleDefinition module,
+            IAssemblyResolver resolver,
+            MethodDefinition method,
+            ILProcessor il,
+            ref Instruction anchor,
+            VariableDefinition local,
+            TypeReference valueType,
+            string breakPoint,
+            MethodReference runtimeBreak)
+        {
+            BreakPointMember member =
+                FindBreakPointMember(
+                    valueType,
+                    breakPoint,
+                    resolver);
+
+            if (member == null)
+            {
+                return;
+            }
+
+            var end =
+                il.Create(OpCodes.Nop);
+
+            InsertBreakPointAfterAnchor(
+                module,
+                il,
+                ref anchor,
+                new LocalSource(local),
+                valueType,
+                member,
+                runtimeBreak,
+                end);
+
+            InsertAfter(
+                il,
+                ref anchor,
+                end);
+        }
+
+        private static void EmitBreakPointMemberTest(
+            ModuleDefinition module,
+            ILProcessor il,
+            Instruction before,
+            ValueSource source,
+            TypeReference valueType,
+            BreakPointMember member,
+            MethodReference runtimeBreak,
+            Instruction end)
+        {
+            if (member.IsStatic)
+            {
+                EmitBreakPointMemberLoadOnly(
+                    module,
+                    il,
+                    before,
+                    member);
+            }
+            else if (valueType.IsValueType)
+            {
+                EmitLoadAddress(
+                    il,
+                    before,
+                    source);
+
+                EmitBreakPointMemberLoadOnly(
+                    module,
+                    il,
+                    before,
+                    member);
+            }
+            else
+            {
+                Instruction hasValue =
+                    il.Create(OpCodes.Nop);
+
+                EmitLoadValue(
+                    il,
+                    before,
+                    source);
+
+                il.InsertBefore(
+                    before,
+                    il.Create(
+                        OpCodes.Dup));
+
+                il.InsertBefore(
+                    before,
+                    il.Create(
+                        OpCodes.Brtrue,
+                        hasValue));
+
+                il.InsertBefore(
+                    before,
+                    il.Create(
+                        OpCodes.Pop));
+
+                il.InsertBefore(
+                    before,
+                    il.Create(
+                        OpCodes.Br,
+                        end));
+
+                il.InsertBefore(
+                    before,
+                    hasValue);
+
+                EmitBreakPointMemberLoadOnly(
+                    module,
+                    il,
+                    before,
+                    member);
+            }
+
+            il.InsertBefore(
+                before,
+                il.Create(
+                    OpCodes.Brfalse,
+                    end));
+
+            il.InsertBefore(
+                before,
+                il.Create(
+                    OpCodes.Call,
+                    runtimeBreak));
+        }
+
+        private static void EmitBreakPointMemberLoadOnly(
+            ModuleDefinition module,
+            ILProcessor il,
+            Instruction before,
+            BreakPointMember member)
+        {
+            if (member == null)
+            {
+                return;
+            }
+
+            if (member.Field != null)
+            {
+                FieldReference field =
+                    module.ImportReference(
+                        member.Field);
+
+                il.InsertBefore(
+                    before,
+                    il.Create(
+                        member.Field.IsStatic
+                            ? OpCodes.Ldsfld
+                            : OpCodes.Ldfld,
+                        field));
+
+                return;
+            }
+
+            if (member.Property != null &&
+                member.Property.GetMethod != null)
+            {
+                MethodDefinition getter =
+                    member.Property.GetMethod;
+
+                MethodReference getterReference =
+                    module.ImportReference(
+                        getter);
+
+                il.InsertBefore(
+                    before,
+                    il.Create(
+                        getter.IsStatic
+                            ? OpCodes.Call
+                            : getter.IsVirtual
+                                ? OpCodes.Callvirt
+                                : OpCodes.Call,
+                        getterReference));
+            }
+        }
+
+        private static void InsertBreakPointMemberLoadAfterAnchor(
+            ModuleDefinition module,
+            ILProcessor il,
+            ref Instruction anchor,
+            BreakPointMember member)
+        {
+            if (member == null)
+            {
+                return;
+            }
+
+            if (member.Field != null)
+            {
+                FieldReference field =
+                    module.ImportReference(
+                        member.Field);
+
+                InsertAfter(
+                    il,
+                    ref anchor,
+                    il.Create(
+                        member.Field.IsStatic
+                            ? OpCodes.Ldsfld
+                            : OpCodes.Ldfld,
+                        field));
+
+                return;
+            }
+
+            if (member.Property != null &&
+                member.Property.GetMethod != null)
+            {
+                MethodDefinition getter =
+                    member.Property.GetMethod;
+
+                MethodReference getterReference =
+                    module.ImportReference(
+                        getter);
+
+                InsertAfter(
+                    il,
+                    ref anchor,
+                    il.Create(
+                        getter.IsStatic
+                            ? OpCodes.Call
+                            : getter.IsVirtual
+                                ? OpCodes.Callvirt
+                                : OpCodes.Call,
+                        getterReference));
+            }
+        }
+
+        private static void InsertBreakPointAfterAnchor(
+            ModuleDefinition module,
+            ILProcessor il,
+            ref Instruction anchor,
+            ValueSource source,
+            TypeReference valueType,
+            BreakPointMember member,
+            MethodReference runtimeBreak,
+            Instruction end)
+        {
+            if (member.IsStatic)
+            {
+                // No receiver required.
+            }
+            else if (valueType.IsValueType)
+            {
+                InsertAfter(
+                    il,
+                    ref anchor,
+                    CreateLoadAddressInstruction(
+                        source));
+            }
+            else
+            {
+                Instruction hasValue =
+                    il.Create(OpCodes.Nop);
+
+                InsertAfter(
+                    il,
+                    ref anchor,
+                    CreateLoadValueInstruction(
+                        source));
+
+                InsertAfter(
+                    il,
+                    ref anchor,
+                    il.Create(
+                        OpCodes.Dup));
+
+                InsertAfter(
+                    il,
+                    ref anchor,
+                    il.Create(
+                        OpCodes.Brtrue,
+                        hasValue));
+
+                InsertAfter(
+                    il,
+                    ref anchor,
+                    il.Create(
+                        OpCodes.Pop));
+
+                InsertAfter(
+                    il,
+                    ref anchor,
+                    il.Create(
+                        OpCodes.Br,
+                        end));
+
+                InsertAfter(
+                    il,
+                    ref anchor,
+                    hasValue);
+            }
+
+            InsertBreakPointMemberLoadAfterAnchor(
+                module,
+                il,
+                ref anchor,
+                member);
+
+            InsertAfter(
+                il,
+                ref anchor,
+                il.Create(
+                    OpCodes.Brfalse,
+                    end));
+
+            InsertAfter(
+                il,
+                ref anchor,
+                il.Create(
+                    OpCodes.Call,
+                    runtimeBreak));
+        }
+
+        private static void EmitLoadValue(
+            ILProcessor il,
+            Instruction before,
+            ValueSource source)
+        {
+            il.InsertBefore(
+                before,
+                source.CreateLoad());
+        }
+
+        private static void EmitLoadAddress(
+            ILProcessor il,
+            Instruction before,
+            ValueSource source)
+        {
+            il.InsertBefore(
+                before,
+                source.CreateLoadAddress());
+        }
+
+        private static Instruction CreateLoadValueInstruction(
+            ValueSource source)
+        {
+            return source.CreateLoad();
+        }
+
+        private static Instruction CreateLoadAddressInstruction(
+            ValueSource source)
+        {
+            return source.CreateLoadAddress();
+        }
+
+        private static BreakPointMember FindBreakPointMember(
+            TypeReference valueType,
+            string breakPoint,
+            IAssemblyResolver resolver)
+        {
+            if (valueType == null ||
+                string.IsNullOrEmpty(breakPoint))
             {
                 return null;
             }
 
-            foreach (CustomAttribute attribute
-                     in method.CustomAttributes)
-            {
-                PopConfiguration configuration =
-                    ReadConfiguration(
-                        attribute);
+            TypeDefinition type =
+                SafeResolve(valueType);
 
-                if (configuration == null)
+            if (type == null)
+            {
+                return null;
+            }
+
+            TypeDefinition current =
+                type;
+
+            while (current != null)
+            {
+                FieldDefinition field =
+                    current.Fields.FirstOrDefault(
+                        x =>
+                            x.Name == breakPoint &&
+                            x.FieldType.MetadataType ==
+                                MetadataType.Boolean);
+
+                if (field != null)
                 {
-                    continue;
+                    return new BreakPointMember
+                    {
+                        Field = field
+                    };
                 }
 
-                if (configuration.Mode != targetMode)
+                PropertyDefinition property =
+                    current.Properties.FirstOrDefault(
+                        x =>
+                            x.Name == breakPoint &&
+                            x.GetMethod != null &&
+                            x.GetMethod.ReturnType.MetadataType ==
+                                MetadataType.Boolean &&
+                            x.Parameters.Count == 0);
+
+                if (property != null)
+                {
+                    return new BreakPointMember
+                    {
+                        Property = property
+                    };
+                }
+
+                if (current.BaseType == null)
+                {
+                    break;
+                }
+
+                current =
+                    SafeResolve(current.BaseType);
+            }
+
+            return null;
+        }
+
+        private static TypeDefinition SafeResolve(
+            TypeReference type)
+        {
+            try
+            {
+                return type?.Resolve();
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static PopConfiguration GetConfiguration(
+            IEnumerable<CustomAttribute> attributes,
+            int mode)
+        {
+            if (attributes == null)
+            {
+                return null;
+            }
+
+            foreach (CustomAttribute attribute in attributes)
+            {
+                PopConfiguration configuration =
+                    ReadConfiguration(attribute);
+
+                if (configuration == null ||
+                    configuration.Mode != mode)
                 {
                     continue;
                 }
@@ -331,55 +2099,21 @@ namespace AbeAttributes.Editor
             return null;
         }
 
-        private static PopConfiguration
-            FindConfiguration(
-                PropertyDefinition property,
-                int targetMode)
-        {
-            if (!property.HasCustomAttributes)
-            {
-                return null;
-            }
-
-            foreach (CustomAttribute attribute
-                     in property.CustomAttributes)
-            {
-                PopConfiguration configuration =
-                    ReadConfiguration(
-                        attribute);
-
-                if (configuration == null)
-                {
-                    continue;
-                }
-
-                if (configuration.Mode != targetMode)
-                {
-                    continue;
-                }
-
-                return configuration;
-            }
-
-            return null;
-        }
-
-        private static PopConfiguration
-            ReadConfiguration(
-                CustomAttribute attribute)
+        private static PopConfiguration ReadConfiguration(
+            CustomAttribute attribute)
         {
             if (attribute == null)
             {
                 return null;
             }
 
-            if (attribute.AttributeType.FullName
-                != AttributeName)
+            if (attribute.AttributeType.FullName !=
+                AttributeName)
             {
                 return null;
             }
 
-            if (attribute.ConstructorArguments.Count < 1)
+            if (attribute.ConstructorArguments.Count == 0)
             {
                 return null;
             }
@@ -399,13 +2133,11 @@ namespace AbeAttributes.Editor
             string breakPoint =
                 null;
 
-            // ------------------------------------------------------------
-            // Constructor argument
-            //
-            // [PopToConsole(
-            //     PopToConsoleMode.Set,
-            //     nameof(BreakPoint))]
-            // ------------------------------------------------------------
+            string valuePath =
+                null;
+
+            string customDebugMethod =
+                null;
 
             if (attribute.ConstructorArguments.Count >= 2)
             {
@@ -415,1335 +2147,377 @@ namespace AbeAttributes.Editor
                         .Value as string;
             }
 
-            // ------------------------------------------------------------
-            // Named property
-            //
-            // [PopToConsole(
-            //     PopToConsoleMode.Set,
-            //     BreakPoint = nameof(BreakPoint))]
-            // ------------------------------------------------------------
-
-            if (string.IsNullOrEmpty(breakPoint))
+            foreach (CustomAttributeNamedArgument property
+                     in attribute.Properties)
             {
-                foreach (CustomAttributeNamedArgument property
-                         in attribute.Properties)
+                if (property.Name ==
+                    BreakPointName)
                 {
-                    if (property.Name != BreakPointName)
-                    {
-                        continue;
-                    }
-
                     breakPoint =
                         property.Argument.Value as string;
 
-                    break;
+                    continue;
+                }
 
+                if (property.Name ==
+                    ValuePathName)
+                {
+                    valuePath =
+                        property.Argument.Value as string;
+
+                    continue;
+                }
+
+                if (property.Name ==
+                    CustomDebugMethodName)
+                {
+                    customDebugMethod =
+                        property.Argument.Value as string;
                 }
             }
 
             return new PopConfiguration
             {
                 Mode = mode,
-                BreakPoint = breakPoint
+                BreakPoint = breakPoint,
+                ValuePath = valuePath,
+                CustomDebugMethod = customDebugMethod
             };
         }
 
-        // ================================================================
-        // Invoke
-        // ================================================================
-
-        private static void InjectInvoke(
-            AssemblyDefinition assembly,
-            DefaultAssemblyResolver resolver,
-            TypeDefinition type,
-            MethodDefinition method,
-            PopConfiguration configuration)
+        private static MethodReference ResolveDebugMethod(
+            ModuleDefinition module,
+            TypeDefinition declaringType,
+            TypeDefinition callerType,
+            PopConfiguration configuration,
+            int parameterCount,
+            bool callerIsStatic,
+            MethodReference defaultMethod)
         {
-            MethodReference runtimeMethod =
-                FindRuntimeMethod(
-                    assembly,
-                    resolver,
-                    RuntimeInvokeMethodName,
-                    2);
-
-            ILProcessor il =
-                method.Body.GetILProcessor();
-
-            Instruction first =
-                method.Body.Instructions[0];
-
-            // ------------------------------------------------------------
-            // OnInvoke(typeName, methodName)
-            // ------------------------------------------------------------
-
-            il.InsertBefore(
-                first,
-                il.Create(
-                    OpCodes.Ldstr,
-                    type.FullName));
-
-            il.InsertBefore(
-                first,
-                il.Create(
-                    OpCodes.Ldstr,
-                    method.Name));
-
-            il.InsertBefore(
-                first,
-                il.Create(
-                    OpCodes.Call,
-                    runtimeMethod));
-
-            // ------------------------------------------------------------
-            // BreakPoint()
-            // ------------------------------------------------------------
-
-            if (!string.IsNullOrEmpty(
-                    configuration.BreakPoint))
+            if (configuration == null ||
+                string.IsNullOrEmpty(
+                    configuration.CustomDebugMethod))
             {
-                InjectBreakPointForInvoke(
-                    assembly,
-                    resolver,
-                    type,
-                    method,
-                    first,
-                    configuration.BreakPoint);
-            }
-        }
-
-        private static void
-            InjectBreakPointForInvoke(
-                AssemblyDefinition assembly,
-                DefaultAssemblyResolver resolver,
-                TypeDefinition type,
-                MethodDefinition sourceMethod,
-                Instruction before,
-                string breakPointName)
-        {
-            MethodDefinition breakPoint =
-                FindBreakPointMethod(
-                    sourceMethod,
-                    type,
-                    breakPointName,
-                    null);
-
-            MethodReference breakPointReference =
-                assembly.MainModule
-                    .ImportReference(
-                        breakPoint);
-
-            MethodReference runtimeBreak =
-                FindRuntimeMethod(
-                    assembly,
-                    resolver,
-                    RuntimeBreakMethodName,
-                    0);
-
-            ILProcessor il =
-                sourceMethod.Body.GetILProcessor();
-
-            Instruction skip =
-                il.Create(
-                    OpCodes.Nop);
-
-            // ------------------------------------------------------------
-            // this
-            // ------------------------------------------------------------
-
-            if (!breakPoint.IsStatic)
-            {
-                il.InsertBefore(
-                    before,
-                    il.Create(
-                        OpCodes.Ldarg_0));
+                return defaultMethod;
             }
 
-            // ------------------------------------------------------------
-            // BreakPoint()
-            // ------------------------------------------------------------
+            MethodDefinition customMethod =
+                FindCustomDebugMethod(
+                    declaringType,
+                    callerType,
+                    configuration.CustomDebugMethod,
+                    callerIsStatic,
+                    module);
 
-            il.InsertBefore(
-                before,
-                il.Create(
-                    OpCodes.Call,
-                    breakPointReference));
-
-            // ------------------------------------------------------------
-            // false -> skip
-            // ------------------------------------------------------------
-
-            il.InsertBefore(
-                before,
-                il.Create(
-                    OpCodes.Brfalse,
-                    skip));
-
-            // ------------------------------------------------------------
-            // true -> Break()
-            // ------------------------------------------------------------
-
-            il.InsertBefore(
-                before,
-                il.Create(
-                    OpCodes.Call,
-                    runtimeBreak));
-
-            il.InsertBefore(
-                before,
-                skip);
-        }
-
-        // ================================================================
-        // Set
-        // ================================================================
-
-        private static void InjectSet(
-            AssemblyDefinition assembly,
-            DefaultAssemblyResolver resolver,
-            TypeDefinition type,
-            PropertyDefinition property,
-            MethodDefinition setter,
-            PopConfiguration configuration)
-        {
-            MethodReference runtimeMethod =
-                FindRuntimeMethod(
-                    assembly,
-                    resolver,
-                    RuntimeSetMethodName,
-                    3);
-
-            ILProcessor il =
-                setter.Body.GetILProcessor();
-
-            Instruction first =
-                setter.Body.Instructions[0];
-
-            ParameterDefinition valueParameter =
-                setter.Parameters[
-                    setter.Parameters.Count - 1];
-
-            // ------------------------------------------------------------
-            // OnSet(typeName, propertyName, value)
-            // ------------------------------------------------------------
-
-            il.InsertBefore(
-                first,
-                il.Create(
-                    OpCodes.Ldstr,
-                    type.FullName));
-
-            il.InsertBefore(
-                first,
-                il.Create(
-                    OpCodes.Ldstr,
-                    property.Name));
-
-            il.InsertBefore(
-                first,
-                CreateLoadArgument(
-                    il,
-                    setter,
-                    valueParameter));
-
-            BoxIfNeeded(
-                il,
-                first,
-                valueParameter.ParameterType,
-                setter.Module);
-
-            il.InsertBefore(
-                first,
-                il.Create(
-                    OpCodes.Call,
-                    runtimeMethod));
-
-            // ------------------------------------------------------------
-            // BreakPoint(value)
-            // ------------------------------------------------------------
-
-            if (!string.IsNullOrEmpty(
-                    configuration.BreakPoint))
+            if (customMethod == null)
             {
-                InjectBreakPointForValue(
-                    assembly,
-                    resolver,
-                    type,
-                    setter,
-                    first,
-                    configuration.BreakPoint,
-                    valueParameter.ParameterType);
-            }
-        }
-
-        // ================================================================
-        // Get
-        // ================================================================
-
-        private static void InjectGet(
-            AssemblyDefinition assembly,
-            DefaultAssemblyResolver resolver,
-            TypeDefinition type,
-            PropertyDefinition property,
-            MethodDefinition getter,
-            PopConfiguration configuration)
-        {
-            MethodReference runtimeMethod =
-                FindRuntimeMethod(
-                    assembly,
-                    resolver,
-                    RuntimeGetMethodName,
-                    3);
-
-            List<Instruction> returns =
-                getter.Body.Instructions
-                    .Where(
-                        instruction =>
-                            instruction.OpCode ==
-                            OpCodes.Ret)
-                    .ToList();
-
-            for (int i = 0;
-                 i < returns.Count;
-                 i++)
-            {
-                InjectGetAtReturn(
-                    assembly,
-                    resolver,
-                    type,
-                    property,
-                    getter,
-                    returns[i],
-                    runtimeMethod,
-                    configuration);
-            }
-        }
-
-        private static void
-            InjectGetAtReturn(
-                AssemblyDefinition assembly,
-                DefaultAssemblyResolver resolver,
-                TypeDefinition type,
-                PropertyDefinition property,
-                MethodDefinition getter,
-                Instruction ret,
-                MethodReference runtimeMethod,
-                PopConfiguration configuration)
-        {
-            ILProcessor il =
-                getter.Body.GetILProcessor();
-
-            // ------------------------------------------------------------
-            // Store return value
-            // ------------------------------------------------------------
-
-            VariableDefinition valueLocal =
-                new VariableDefinition(
-                    getter.ReturnType);
-
-            getter.Body.Variables.Add(
-                valueLocal);
-
-            il.InsertBefore(
-                ret,
-                il.Create(
-                    OpCodes.Stloc,
-                    valueLocal));
-
-            // ------------------------------------------------------------
-            // OnGet(typeName, propertyName, value)
-            // ------------------------------------------------------------
-
-            il.InsertBefore(
-                ret,
-                il.Create(
-                    OpCodes.Ldstr,
-                    type.FullName));
-
-            il.InsertBefore(
-                ret,
-                il.Create(
-                    OpCodes.Ldstr,
-                    property.Name));
-
-            il.InsertBefore(
-                ret,
-                il.Create(
-                    OpCodes.Ldloc,
-                    valueLocal));
-
-            BoxIfNeeded(
-                il,
-                ret,
-                getter.ReturnType,
-                getter.Module);
-
-            il.InsertBefore(
-                ret,
-                il.Create(
-                    OpCodes.Call,
-                    runtimeMethod));
-
-            // ------------------------------------------------------------
-            // BreakPoint(value)
-            // ------------------------------------------------------------
-
-            if (!string.IsNullOrEmpty(
-                    configuration.BreakPoint))
-            {
-                InjectBreakPointFromLocal(
-                    assembly,
-                    resolver,
-                    type,
-                    getter,
-                    ret,
-                    configuration.BreakPoint,
-                    valueLocal);
+                throw new InvalidOperationException(
+                    "PopToConsole custom debug method not found or has an invalid signature: " +
+                    declaringType.FullName + "." +
+                    configuration.CustomDebugMethod +
+                    " (expected void()).");
             }
 
-            // ------------------------------------------------------------
-            // Restore return value
-            // ------------------------------------------------------------
-
-            il.InsertBefore(
-                ret,
-                il.Create(
-                    OpCodes.Ldloc,
-                    valueLocal));
+            return module.ImportReference(customMethod);
         }
 
-        // ================================================================
-        // BreakPoint(value)
-        // ================================================================
-
-        private static void
-            InjectBreakPointForValue(
-                AssemblyDefinition assembly,
-                DefaultAssemblyResolver resolver,
-                TypeDefinition type,
-                MethodDefinition sourceMethod,
-                Instruction before,
-                string breakPointName,
-                TypeReference valueType)
+        private static MethodDefinition FindCustomDebugMethod(
+            TypeDefinition declaringType,
+            TypeDefinition callerType,
+            string methodName,
+            bool callerIsStatic,
+            ModuleDefinition module)
         {
-            MethodDefinition breakPoint =
-                FindBreakPointMethod(
-                    sourceMethod,
-                    type,
-                    breakPointName,
-                    valueType);
-
-            MethodReference breakPointReference =
-                assembly.MainModule
-                    .ImportReference(
-                        breakPoint);
-
-            MethodReference runtimeBreak =
-                FindRuntimeMethod(
-                    assembly,
-                    resolver,
-                    RuntimeBreakMethodName,
-                    0);
-
-            ILProcessor il =
-                sourceMethod.Body.GetILProcessor();
-
-            Instruction skip =
-                il.Create(
-                    OpCodes.Nop);
-
-            ParameterDefinition valueParameter =
-                sourceMethod.Parameters[
-                    sourceMethod.Parameters.Count - 1];
-
-            // ------------------------------------------------------------
-            // this
-            // ------------------------------------------------------------
-
-            if (!breakPoint.IsStatic)
+            if (declaringType == null ||
+                string.IsNullOrEmpty(methodName))
             {
-                il.InsertBefore(
-                    before,
-                    il.Create(
-                        OpCodes.Ldarg_0));
+                return null;
             }
 
-            // ------------------------------------------------------------
-            // value
-            // ------------------------------------------------------------
-
-            il.InsertBefore(
-                before,
-                CreateLoadArgument(
-                    il,
-                    sourceMethod,
-                    valueParameter));
-
-            // ------------------------------------------------------------
-            // BreakPoint(value)
-            // ------------------------------------------------------------
-
-            il.InsertBefore(
-                before,
-                il.Create(
-                    OpCodes.Call,
-                    breakPointReference));
-
-            // ------------------------------------------------------------
-            // false -> skip
-            // ------------------------------------------------------------
-
-            il.InsertBefore(
-                before,
-                il.Create(
-                    OpCodes.Brfalse,
-                    skip));
-
-            // ------------------------------------------------------------
-            // true -> Break()
-            // ------------------------------------------------------------
-
-            il.InsertBefore(
-                before,
-                il.Create(
-                    OpCodes.Call,
-                    runtimeBreak));
-
-            il.InsertBefore(
-                before,
-                skip);
-        }
-
-        // ================================================================
-        // BreakPoint(local)
-        // ================================================================
-
-        private static void
-            InjectBreakPointFromLocal(
-                AssemblyDefinition assembly,
-                DefaultAssemblyResolver resolver,
-                TypeDefinition type,
-                MethodDefinition sourceMethod,
-                Instruction before,
-                string breakPointName,
-                VariableDefinition valueLocal)
-        {
-            MethodDefinition breakPoint =
-                FindBreakPointMethod(
-                    sourceMethod,
-                    type,
-                    breakPointName,
-                    valueLocal.VariableType);
-
-            MethodReference breakPointReference =
-                assembly.MainModule
-                    .ImportReference(
-                        breakPoint);
-
-            MethodReference runtimeBreak =
-                FindRuntimeMethod(
-                    assembly,
-                    resolver,
-                    RuntimeBreakMethodName,
-                    0);
-
-            ILProcessor il =
-                sourceMethod.Body.GetILProcessor();
-
-            Instruction skip =
-                il.Create(
-                    OpCodes.Nop);
-
-            // ------------------------------------------------------------
-            // this
-            // ------------------------------------------------------------
-
-            if (!breakPoint.IsStatic)
-            {
-                il.InsertBefore(
-                    before,
-                    il.Create(
-                        OpCodes.Ldarg_0));
-            }
-
-            // ------------------------------------------------------------
-            // value
-            // ------------------------------------------------------------
-
-            il.InsertBefore(
-                before,
-                il.Create(
-                    OpCodes.Ldloc,
-                    valueLocal));
-
-            // ------------------------------------------------------------
-            // BreakPoint(value)
-            // ------------------------------------------------------------
-
-            il.InsertBefore(
-                before,
-                il.Create(
-                    OpCodes.Call,
-                    breakPointReference));
-
-            // ------------------------------------------------------------
-            // false -> skip
-            // ------------------------------------------------------------
-
-            il.InsertBefore(
-                before,
-                il.Create(
-                    OpCodes.Brfalse,
-                    skip));
-
-            // ------------------------------------------------------------
-            // true -> Break()
-            // ------------------------------------------------------------
-
-            il.InsertBefore(
-                before,
-                il.Create(
-                    OpCodes.Call,
-                    runtimeBreak));
-
-            il.InsertBefore(
-                before,
-                skip);
-        }
-
-        // ================================================================
-        // Find BreakPoint
-        // ================================================================
-
-        private static MethodDefinition
-            FindBreakPointMethod(
-                MethodDefinition sourceMethod,
-                TypeDefinition type,
-                string methodName,
-                TypeReference valueType)
-        {
-            List<MethodDefinition> candidates =
-                new List<MethodDefinition>();
+            MethodDefinition match = null;
 
             foreach (MethodDefinition method
-                     in type.Methods)
+                     in declaringType.Methods)
             {
-                if (method.Name != methodName)
+                if (method.Name != methodName ||
+                    method.IsConstructor ||
+                    method.HasGenericParameters ||
+                    method.ReturnType.MetadataType !=
+                        MetadataType.Void ||
+                    method.Parameters.Count != 0)
                 {
                     continue;
                 }
 
-                candidates.Add(
-                    method);
-            }
-
-            // ------------------------------------------------------------
-            // Method not found
-            // ------------------------------------------------------------
-
-            if (candidates.Count == 0)
-            {
-                string expectedSignature =
-                    valueType == null
-                        ? $"bool {methodName}()"
-                        : $"bool {methodName}(" +
-                          $"{GetTypeDisplayName(valueType)})";
-
-                throw new InvalidOperationException(
-                    "[PopToConsole] BreakPoint method " +
-                    "was not found.\n" +
-                    "Type:\n" +
-                    $"    {type.FullName}\n" +
-                    "Expected:\n" +
-                    $"    {expectedSignature}");
-            }
-
-            // ------------------------------------------------------------
-            // Exact parameter match
-            // ------------------------------------------------------------
-
-            MethodDefinition exactMatch =
-                null;
-
-            for (int i = 0;
-                 i < candidates.Count;
-                 i++)
-            {
-                MethodDefinition candidate =
-                    candidates[i];
-
-                if (valueType == null)
-                {
-                    if (candidate.Parameters.Count != 0)
-                    {
-                        continue;
-                    }
-
-                    exactMatch =
-                        candidate;
-
-                    break;
-                }
-
-                if (candidate.Parameters.Count != 1)
+                if (!method.IsStatic &&
+                    (callerIsStatic ||
+                     callerType != declaringType))
                 {
                     continue;
                 }
 
-                ParameterDefinition parameter =
-                    candidate.Parameters[0];
-
-                if (parameter.IsOut ||
-                    parameter.ParameterType.IsByReference)
+                if (callerType != declaringType &&
+                    !method.IsPublic &&
+                    !method.IsAssembly)
                 {
                     continue;
                 }
 
-                if (!AreSameType(
-                        parameter.ParameterType,
-                        valueType))
+                if (match != null)
                 {
-                    continue;
+                    throw new InvalidOperationException(
+                        "PopToConsole custom debug method is ambiguous: " +
+                        declaringType.FullName + "." +
+                        methodName +
+                        " with zero parameters.");
                 }
 
-                exactMatch =
-                    candidate;
-
-                break;
+                match = method;
             }
 
-            // ------------------------------------------------------------
-            // Signature mismatch
-            // ------------------------------------------------------------
-
-            if (exactMatch == null)
-            {
-                string expectedSignature =
-                    valueType == null
-                        ? $"bool {methodName}()"
-                        : $"bool {methodName}(" +
-                          $"{GetTypeDisplayName(valueType)})";
-
-                string foundSignatures =
-                    string.Join(
-                        "\n",
-                        candidates.Select(
-                            FormatMethodSignature));
-
-                throw new InvalidOperationException(
-                    "[PopToConsole] Invalid BreakPoint " +
-                    "parameter signature.\n" +
-                    "Type:\n" +
-                    $"    {type.FullName}\n" +
-                    "Expected:\n" +
-                    $"    {expectedSignature}\n" +
-                    "Found:\n" +
-                    foundSignatures);
-            }
-
-            // ------------------------------------------------------------
-            // Return type
-            // ------------------------------------------------------------
-
-            if (!AreSameType(
-                    exactMatch.ReturnType,
-                    type.Module.TypeSystem.Boolean))
-            {
-                throw new InvalidOperationException(
-                    "[PopToConsole] Invalid BreakPoint " +
-                    "return type.\n" +
-                    "Method:\n" +
-                    $"    {type.FullName}." +
-                    $"{FormatMethodSignature(exactMatch)}\n" +
-                    "Expected:\n" +
-                    "    System.Boolean\n" +
-                    "Actual:\n" +
-                    $"    {GetTypeDisplayName(exactMatch.ReturnType)}");
-            }
-
-            // ------------------------------------------------------------
-            // Generic method
-            // ------------------------------------------------------------
-
-            if (exactMatch.HasGenericParameters)
-            {
-                throw new InvalidOperationException(
-                    "[PopToConsole] BreakPoint method " +
-                    "cannot be generic.\n" +
-                    "Method:\n" +
-                    $"    {type.FullName}." +
-                    $"{FormatMethodSignature(exactMatch)}");
-            }
-
-            // ------------------------------------------------------------
-            // Generic declaring type
-            // ------------------------------------------------------------
-
-            if (type.HasGenericParameters)
-            {
-                throw new InvalidOperationException(
-                    "[PopToConsole] BreakPoint on generic " +
-                    "types is not supported.\n" +
-                    "Type:\n" +
-                    $"    {type.FullName}");
-            }
-
-            // ------------------------------------------------------------
-            // Executable body
-            // ------------------------------------------------------------
-
-            if (!exactMatch.HasBody)
-            {
-                throw new InvalidOperationException(
-                    "[PopToConsole] BreakPoint method " +
-                    "has no method body.\n" +
-                    "Method:\n" +
-                    $"    {type.FullName}." +
-                    $"{FormatMethodSignature(exactMatch)}");
-            }
-
-            if (exactMatch.IsAbstract)
-            {
-                throw new InvalidOperationException(
-                    "[PopToConsole] BreakPoint method " +
-                    "cannot be abstract.\n" +
-                    "Method:\n" +
-                    $"    {type.FullName}." +
-                    $"{FormatMethodSignature(exactMatch)}");
-            }
-
-            if (exactMatch.IsPInvokeImpl)
-            {
-                throw new InvalidOperationException(
-                    "[PopToConsole] BreakPoint method " +
-                    "cannot be a P/Invoke method.\n" +
-                    "Method:\n" +
-                    $"    {type.FullName}." +
-                    $"{FormatMethodSignature(exactMatch)}");
-            }
-
-            // ------------------------------------------------------------
-            // Static / instance compatibility
-            //
-            // Instance source:
-            //     instance BreakPoint -> valid
-            //     static BreakPoint   -> valid
-            //
-            // Static source:
-            //     static BreakPoint   -> valid
-            //     instance BreakPoint -> invalid
-            // ------------------------------------------------------------
-
-            if (sourceMethod.IsStatic &&
-                !exactMatch.IsStatic)
-            {
-                throw new InvalidOperationException(
-                    "[PopToConsole] Invalid BreakPoint " +
-                    "context.\n" +
-                    "Source method is static:\n" +
-                    $"    {type.FullName}.{sourceMethod.Name}\n" +
-                    "BreakPoint is instance:\n" +
-                    $"    {type.FullName}." +
-                    $"{FormatMethodSignature(exactMatch)}\n" +
-                    "A static source cannot call an " +
-                    "instance BreakPoint.");
-            }
-
-            return exactMatch;
+            return match;
         }
 
-        private static bool
-            AreSameType(
-                TypeReference a,
-                TypeReference b)
+        private static MethodReference FindRuntimeMethod(
+            AssemblyDefinition currentAssembly,
+            IAssemblyResolver resolver,
+            TypeDefinition runtimeType,
+            string methodName,
+            int parameterCount)
         {
-            if (a == null ||
-                b == null)
+            MethodDefinition method =
+                runtimeType.Methods.FirstOrDefault(
+                    x =>
+                        x.Name == methodName &&
+                        x.Parameters.Count == parameterCount &&
+                        x.IsStatic);
+
+            if (method != null)
             {
-                return false;
+                return
+                    currentAssembly.MainModule
+                        .ImportReference(method);
             }
 
-            return
-                a.FullName ==
-                b.FullName;
+            return null;
         }
 
-        private static string
-            FormatMethodSignature(
-                MethodDefinition method)
+        private static TypeDefinition FindType(
+            AssemblyDefinition currentAssembly,
+            IAssemblyResolver resolver,
+            string fullName)
         {
-            string parameters =
-                string.Join(
-                    ", ",
-                    method.Parameters.Select(
-                        GetParameterDisplayName));
+            TypeDefinition type =
+                FindTypeInAssembly(
+                    currentAssembly,
+                    fullName);
 
-            return
-                $"{GetTypeDisplayName(method.ReturnType)} " +
-                $"{method.Name}({parameters})";
-        }
-
-        private static string
-            GetParameterDisplayName(
-                ParameterDefinition parameter)
-        {
-            if (parameter == null)
+            if (type != null)
             {
-                return "<null>";
-            }
-
-            string modifier =
-                parameter.IsOut
-                    ? "out "
-                    : parameter.ParameterType.IsByReference
-                        ? "ref "
-                        : string.Empty;
-
-            TypeReference parameterType =
-                parameter.ParameterType.IsByReference
-                    ? parameter.ParameterType.GetElementType()
-                    : parameter.ParameterType;
-
-            return
-                modifier +
-                GetTypeDisplayName(parameterType);
-        }
-
-        private static string
-            GetTypeDisplayName(
-                TypeReference type)
-        {
-            if (type == null)
-            {
-                return "<null>";
-            }
-
-            return type.FullName;
-        }
-
-        // ================================================================
-        // Runtime Method
-        // ================================================================
-
-        private static MethodReference
-            FindRuntimeMethod(
-                AssemblyDefinition assembly,
-                DefaultAssemblyResolver resolver,
-                string methodName,
-                int parameterCount)
-        {
-            MethodDefinition localMethod =
-                FindRuntimeMethod(
-                    assembly.MainModule,
-                    methodName,
-                    parameterCount);
-
-            if (localMethod != null)
-            {
-                return localMethod;
+                return type;
             }
 
             foreach (AssemblyNameReference reference
-                     in assembly.MainModule
-                         .AssemblyReferences)
+                     in currentAssembly.MainModule.AssemblyReferences)
             {
-                AssemblyDefinition referencedAssembly;
-
                 try
                 {
-                    referencedAssembly =
-                        resolver.Resolve(
-                            reference);
+                    AssemblyDefinition assembly =
+                        resolver.Resolve(reference);
+
+                    type =
+                        FindTypeInAssembly(
+                            assembly,
+                            fullName);
+
+                    if (type != null)
+                    {
+                        return type;
+                    }
                 }
                 catch
                 {
-                    continue;
-                }
-
-                if (referencedAssembly == null)
-                {
-                    continue;
-                }
-
-                MethodDefinition referencedMethod =
-                    FindRuntimeMethod(
-                        referencedAssembly.MainModule,
-                        methodName,
-                        parameterCount);
-
-                if (referencedMethod == null)
-                {
-                    continue;
-                }
-
-                return assembly.MainModule
-                    .ImportReference(
-                        referencedMethod);
-            }
-
-            throw new InvalidOperationException(
-                "Cannot find " +
-                $"{RuntimeTypeName}.{methodName}.");
-        }
-
-        private static MethodDefinition
-            FindRuntimeMethod(
-                ModuleDefinition module,
-                string methodName,
-                int parameterCount)
-        {
-            foreach (TypeDefinition type
-                     in GetAllTypes(module))
-            {
-                if (type.FullName
-                    != RuntimeTypeName)
-                {
-                    continue;
-                }
-
-                foreach (MethodDefinition method
-                         in type.Methods)
-                {
-                    if (method.Name != methodName)
-                    {
-                        continue;
-                    }
-
-                    if (!method.IsStatic)
-                    {
-                        continue;
-                    }
-
-                    if (method.ReturnType.FullName
-                        != module
-                            .TypeSystem
-                            .Void
-                            .FullName)
-                    {
-                        continue;
-                    }
-
-                    if (method.Parameters.Count
-                        != parameterCount)
-                    {
-                        continue;
-                    }
-
-                    return method;
+                    // Ignore individual unresolved references and continue.
                 }
             }
 
             return null;
         }
 
-        // ================================================================
-        // Already Injected
-        // ================================================================
-
-        private static bool AlreadyInjected(
-            MethodDefinition method,
-            string runtimeMethodName)
+        private static TypeDefinition FindTypeInAssembly(
+            AssemblyDefinition assembly,
+            string fullName)
         {
-            if (!method.HasBody)
+            if (assembly == null)
             {
-                return false;
+                return null;
             }
 
-            foreach (Instruction instruction
-                     in method.Body.Instructions)
-            {
-                if (instruction.OpCode
-                    != OpCodes.Call)
-                {
-                    continue;
-                }
-
-                if (!(instruction.Operand
-                      is MethodReference reference))
-                {
-                    continue;
-                }
-
-                if (reference.Name
-                    != runtimeMethodName)
-                {
-                    continue;
-                }
-
-                if (reference.DeclaringType
-                    .FullName != RuntimeTypeName)
-                {
-                    continue;
-                }
-
-                return true;
-            }
-
-            return false;
-        }
-
-        // ================================================================
-        // IL Helpers
-        // ================================================================
-
-        private static Instruction
-            CreateLoadArgument(
-                ILProcessor il,
-                MethodDefinition method,
-                ParameterDefinition parameter)
-        {
-            int index =
-                parameter.Index;
-
-            if (!method.IsStatic)
-            {
-                index++;
-            }
-
-            switch (index)
-            {
-                case 0:
-                    return il.Create(
-                        OpCodes.Ldarg_0);
-
-                case 1:
-                    return il.Create(
-                        OpCodes.Ldarg_1);
-
-                case 2:
-                    return il.Create(
-                        OpCodes.Ldarg_2);
-
-                case 3:
-                    return il.Create(
-                        OpCodes.Ldarg_3);
-
-                default:
-                    return il.Create(
-                        OpCodes.Ldarg,
-                        parameter);
-            }
-        }
-
-        private static void BoxIfNeeded(
-            ILProcessor il,
-            Instruction before,
-            TypeReference type,
-            ModuleDefinition module)
-        {
-            if (type.IsByReference)
-            {
-                type =
-                    type.GetElementType();
-            }
-
-            if (!type.IsValueType)
-            {
-                return;
-            }
-
-            il.InsertBefore(
-                before,
-                il.Create(
-                    OpCodes.Box,
-                    module.ImportReference(type)));
-        }
-
-        // ================================================================
-        // Should Process
-        // ================================================================
-
-        private static bool
-            ShouldProcess(
-                MethodDefinition method)
-        {
-            if (method == null)
-            {
-                return false;
-            }
-
-            if (!method.HasBody)
-            {
-                return false;
-            }
-
-            if (method.IsAbstract)
-            {
-                return false;
-            }
-
-            if (method.IsPInvokeImpl)
-            {
-                return false;
-            }
-
-            if (method.IsConstructor)
-            {
-                return false;
-            }
-
-            return true;
-        }
-
-        // ================================================================
-        // Types
-        // ================================================================
-
-        private static IEnumerable<TypeDefinition>
-            GetAllTypes(
-                ModuleDefinition module)
-        {
             foreach (TypeDefinition type
-                     in module.Types)
+                     in assembly.MainModule.Types)
             {
-                foreach (TypeDefinition result
-                         in GetAllTypes(type))
+                TypeDefinition result =
+                    FindTypeRecursive(
+                        type,
+                        fullName);
+
+                if (result != null)
                 {
-                    yield return result;
+                    return result;
                 }
             }
+
+            return null;
         }
 
-        private static IEnumerable<TypeDefinition>
-            GetAllTypes(
-                TypeDefinition type)
+        private static TypeDefinition FindTypeRecursive(
+            TypeDefinition type,
+            string fullName)
         {
-            yield return type;
+            if (type.FullName == fullName)
+            {
+                return type;
+            }
 
             foreach (TypeDefinition nested
                      in type.NestedTypes)
             {
-                foreach (TypeDefinition result
-                         in GetAllTypes(nested))
+                TypeDefinition result =
+                    FindTypeRecursive(
+                        nested,
+                        fullName);
+
+                if (result != null)
                 {
-                    yield return result;
+                    return result;
                 }
             }
+
+            return null;
         }
 
-        // ================================================================
-        // Resolver
-        // ================================================================
-
-        private static DefaultAssemblyResolver
-            CreateResolver(
-                ICompiledAssembly compiledAssembly)
+        private static Instruction GetPrefixStart(
+            Instruction instruction)
         {
-            DefaultAssemblyResolver resolver =
-                new DefaultAssemblyResolver();
+            Instruction start =
+                instruction;
 
-            foreach (string reference
-                     in compiledAssembly.References)
+            Instruction previous =
+                start.Previous;
+
+            while (previous != null &&
+                   previous.OpCode.OpCodeType ==
+                       OpCodeType.Prefix)
             {
-                if (string.IsNullOrEmpty(reference))
-                {
-                    continue;
-                }
-
-                string directory =
-                    Path.GetDirectoryName(
-                        reference);
-
-                if (string.IsNullOrEmpty(directory))
-                {
-                    continue;
-                }
-
-                if (!resolver
-                    .GetSearchDirectories()
-                    .Contains(directory))
-                {
-                    resolver.AddSearchDirectory(
-                        directory);
-                }
+                start = previous;
+                previous = previous.Previous;
             }
 
-            return resolver;
+            return start;
         }
 
-        // ================================================================
-        // Write
-        // ================================================================
-
-        private static ILPostProcessResult
-            WriteAssembly(
-                AssemblyDefinition assembly,
-                ICompiledAssembly compiledAssembly)
+        private static void InsertAfter(
+            ILProcessor il,
+            ref Instruction anchor,
+            Instruction instruction)
         {
-            using MemoryStream peOutput =
-                new MemoryStream();
+            il.InsertAfter(
+                anchor,
+                instruction);
 
-            using MemoryStream pdbOutput =
-                new MemoryStream();
+            anchor = instruction;
+        }
 
-            bool writeSymbols =
-                compiledAssembly
-                    .InMemoryAssembly
-                    .PdbData != null
-                &&
-                compiledAssembly
-                    .InMemoryAssembly
-                    .PdbData
-                    .Length > 0;
+        private abstract class ValueSource
+        {
+            public abstract Instruction CreateLoad();
+            public abstract Instruction CreateLoadAddress();
+        }
 
-            WriterParameters writerParameters =
-                new WriterParameters
-                {
-                    WriteSymbols =
-                        writeSymbols
-                };
+        private sealed class LocalSource : ValueSource
+        {
+            private readonly VariableDefinition _local;
 
-            if (writeSymbols)
+            public LocalSource(
+                VariableDefinition local)
             {
-                writerParameters.SymbolWriterProvider =
-                    new PortablePdbWriterProvider();
-
-                writerParameters.SymbolStream =
-                    pdbOutput;
+                _local = local;
             }
 
-            assembly.Write(
-                peOutput,
-                writerParameters);
+            public override Instruction CreateLoad()
+            {
+                return Instruction.Create(
+                    OpCodes.Ldloc,
+                    _local);
+            }
 
-            return new ILPostProcessResult(
-                new InMemoryAssembly(
-                    peOutput.ToArray(),
-                    writeSymbols
-                        ? pdbOutput.ToArray()
-                        : compiledAssembly
-                            .InMemoryAssembly
-                            .PdbData),
-                new List<DiagnosticMessage>());
+            public override Instruction CreateLoadAddress()
+            {
+                return Instruction.Create(
+                    OpCodes.Ldloca,
+                    _local);
+            }
         }
 
-        // ================================================================
-        // Error
-        // ================================================================
-
-        private static ILPostProcessResult
-    CreateErrorResult(
-        ICompiledAssembly compiledAssembly,
-        Exception exception)
+        private sealed class ArgumentSource : ValueSource
         {
-            DiagnosticMessage diagnostic =
-                new DiagnosticMessage
-                {
-                    DiagnosticType =
-                        DiagnosticType.Error,
+            private readonly int _index;
+            private readonly ParameterDefinition _parameter;
 
-                    MessageData =
-    "\n[PopToConsole]\n" +
-    "================ BREAKPOINT ERROR ================\n" +
-    exception.Message +
-    "\n===================================================="
+            public ArgumentSource(int index)
+            {
+                _index = index;
+            }
+
+            public ArgumentSource(
+                ParameterDefinition parameter)
+            {
+                _parameter = parameter;
+                _index = parameter?.Index ?? 0;
+            }
+
+            public override Instruction CreateLoad()
+            {
+                if (_parameter != null)
+                {
+                    return Instruction.Create(
+                        OpCodes.Ldarg,
+                        _parameter);
+                }
+
+                return _index switch
+                {
+                    0 => Instruction.Create(
+                        OpCodes.Ldarg_0),
+
+                    1 => Instruction.Create(
+                        OpCodes.Ldarg_1),
+
+                    2 => Instruction.Create(
+                        OpCodes.Ldarg_2),
+
+                    3 => Instruction.Create(
+                        OpCodes.Ldarg_3),
+
+                    _ => Instruction.Create(
+                        OpCodes.Ldarg,
+                        _index)
                 };
+            }
 
-            return new ILPostProcessResult(
-                compiledAssembly.InMemoryAssembly,
-                new List<DiagnosticMessage>
+            public override Instruction CreateLoadAddress()
+            {
+                if (_parameter != null)
                 {
-            diagnostic
-                });
+                    return Instruction.Create(
+                        OpCodes.Ldarga,
+                        _parameter);
+                }
+
+                return Instruction.Create(
+                    OpCodes.Ldarga,
+                    _index);
+            }
         }
     }
 }

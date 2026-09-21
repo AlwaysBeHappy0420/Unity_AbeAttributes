@@ -7,7 +7,7 @@ namespace AbeAttributes
         AttributeTargets.Field |
         AttributeTargets.Property,
         AllowMultiple = false)]
-    public sealed class RequiredAttribute : ValidatorAttribute
+    public sealed class RequiredAttribute : AbeAttribute
     {
         public string Message { get; }
 

@@ -739,8 +739,8 @@ namespace AbeAttributes.Editor
         // ================================================================
 
         private void AddNestedFields(
-            List<AbeProperty> result,
-            object target)
+    List<AbeProperty> result,
+    object target)
         {
             IEnumerable<FieldInfo> fields =
                 AbeReflectionUtility.GetAllFields(
@@ -758,13 +758,36 @@ namespace AbeAttributes.Editor
                     continue;
                 }
 
-                if (!field.IsPublic)
+                if (field.Name.Contains(
+                        "k__BackingField"))
                 {
                     continue;
                 }
 
-                if (field.Name.Contains(
-                    "k__BackingField"))
+                bool isPublic =
+                    field.IsPublic;
+
+                bool hasSerializeField =
+                    field.IsDefined(
+                        typeof(SerializeField),
+                        true);
+
+                bool hasSerializeReference =
+                    field.IsDefined(
+                        typeof(SerializeReference),
+                        true);
+
+                // ------------------------------------------------------------
+                // Nested objects should include:
+                //
+                // public fields
+                // private [SerializeField]
+                // fields using [SerializeReference]
+                // ------------------------------------------------------------
+
+                if (!isPublic &&
+                    !hasSerializeField &&
+                    !hasSerializeReference)
                 {
                     continue;
                 }

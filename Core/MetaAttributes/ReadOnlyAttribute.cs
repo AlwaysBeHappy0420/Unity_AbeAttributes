@@ -2,8 +2,13 @@
 
 namespace AbeAttributes
 {
-    [AttributeUsage(AttributeTargets.Field, AllowMultiple = false, Inherited = true)]
-    public class ReadOnlyAttribute : MetaAttribute
+    [AttributeUsage(
+        AttributeTargets.Field |
+        AttributeTargets.Property |
+        AttributeTargets.Method,
+        AllowMultiple = false,
+        Inherited = true)]
+    public class ReadOnlyAttribute : AbeAttribute
     {
 
     }

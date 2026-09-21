@@ -30,7 +30,7 @@ namespace AbeAttributes.Editor
                     attributes[i];
 
                 if (!(attribute
-                    is ValidatorAttribute validatorAttribute))
+                    is AbeAttribute validatorAttribute))
                 {
                     continue;
                 }
