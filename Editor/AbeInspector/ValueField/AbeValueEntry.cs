@@ -1,16 +1,17 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
 using UnityEditor;
 
 namespace AbeAttributes.Editor
 {
-    public sealed class AbeValueEntry
+    internal sealed class AbeValueEntry
     {
         private readonly AbeProperty _property;
 
         private readonly AbeSerializedValueAccessor
-    _serializedAccessor;
+            _serializedAccessor;
 
         private readonly AbeCollectionAccessor
             _collectionAccessor;
@@ -326,6 +327,10 @@ namespace AbeAttributes.Editor
                 return;
             }
 
+            value =
+                PrepareValueForTargetType(
+                    value);
+
             if (_property.SerializedProperty != null)
             {
                 _serializedAccessor
@@ -338,6 +343,206 @@ namespace AbeAttributes.Editor
             _reflectionAccessor
                 .SetValue(
                     value);
+        }
+
+        // ================================================================
+        // Value Conversion
+        // ================================================================
+
+        private object PrepareValueForTargetType(
+            object value)
+        {
+            Type targetType =
+                ValueType;
+
+            if (targetType == null ||
+                targetType == typeof(object))
+            {
+                return value;
+            }
+
+            // Already the correct type.
+            if (value != null &&
+                targetType.IsInstanceOfType(value))
+            {
+                return value;
+            }
+
+            // ------------------------------------------------------------
+            // Null
+            // ------------------------------------------------------------
+
+            if (value == null)
+            {
+                if (IsListType(targetType))
+                {
+                    Type elementType =
+                        targetType.GetGenericArguments()[0];
+
+                    if (elementType.IsValueType &&
+                        Nullable.GetUnderlyingType(
+                            elementType) == null)
+                    {
+                        throw new ArgumentException(
+                            $"Cannot add null to " +
+                            $"'{targetType}'.");
+                    }
+
+                    return CreateSingleElementList(
+                        targetType,
+                        null);
+                }
+
+                return null;
+            }
+
+            // ------------------------------------------------------------
+            // List<T>
+            //
+            // A single selected Dropdown value is wrapped
+            // into a List<T>.
+            //
+            // T       -> T
+            // List<T> -> List<T> { value }
+            // ------------------------------------------------------------
+
+            if (IsListType(targetType))
+            {
+                return CreateSingleElementList(
+                    targetType,
+                    value);
+            }
+
+            // ------------------------------------------------------------
+            // Non-list target
+            // ------------------------------------------------------------
+
+            if (targetType.IsInstanceOfType(value))
+            {
+                return value;
+            }
+
+            return ConvertValueForType(
+                value,
+                targetType);
+        }
+
+        private static bool IsListType(
+            Type type)
+        {
+            return
+                type != null &&
+                type.IsGenericType &&
+                type.GetGenericTypeDefinition() ==
+                typeof(List<>);
+        }
+
+        private static object CreateSingleElementList(
+            Type listType,
+            object value)
+        {
+            Type elementType =
+                listType.GetGenericArguments()[0];
+
+            object convertedValue =
+                ConvertValueForType(
+                    value,
+                    elementType);
+
+            IList list =
+                (IList)Activator.CreateInstance(
+                    listType);
+
+            list.Add(
+                convertedValue);
+
+            return list;
+        }
+
+        private static object ConvertValueForType(
+            object value,
+            Type targetType)
+        {
+            if (targetType == null)
+            {
+                return value;
+            }
+
+            if (value == null)
+            {
+                if (targetType.IsValueType &&
+                    Nullable.GetUnderlyingType(
+                        targetType) == null)
+                {
+                    throw new ArgumentException(
+                        $"Cannot assign null to " +
+                        $"value type '{targetType}'.");
+                }
+
+                return null;
+            }
+
+            if (targetType.IsInstanceOfType(value))
+            {
+                return value;
+            }
+
+            // ------------------------------------------------------------
+            // Nullable<T>
+            // ------------------------------------------------------------
+
+            Type nullableType =
+                Nullable.GetUnderlyingType(
+                    targetType);
+
+            if (nullableType != null)
+            {
+                object converted =
+                    ConvertValueForType(
+                        value,
+                        nullableType);
+
+                return Activator.CreateInstance(
+                    targetType,
+                    converted);
+            }
+
+            // ------------------------------------------------------------
+            // Enum
+            // ------------------------------------------------------------
+
+            if (targetType.IsEnum)
+            {
+                if (value is string text)
+                {
+                    return Enum.Parse(
+                        targetType,
+                        text);
+                }
+
+                return Enum.ToObject(
+                    targetType,
+                    value);
+            }
+
+            // ------------------------------------------------------------
+            // Standard convertible values
+            // ------------------------------------------------------------
+
+            try
+            {
+                return Convert.ChangeType(
+                    value,
+                    targetType);
+            }
+            catch (Exception ex)
+            {
+                throw new ArgumentException(
+                    $"Value of type " +
+                    $"'{value.GetType()}' cannot be " +
+                    $"converted to '{targetType}'.",
+                    ex);
+            }
         }
 
         // ================================================================

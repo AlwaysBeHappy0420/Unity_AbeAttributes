@@ -5,11 +5,8 @@ using System.Reflection;
 using UnityEditor;
 using UnityEngine;
 
-
 namespace AbeAttributes.Editor
 {
-
-
     public sealed class AbeProperty
     {
         private readonly List<Attribute> _attributes =
@@ -35,7 +32,7 @@ namespace AbeAttributes.Editor
 
         public InspectorPropertyInfo Info { get; }
 
-        public AbeValueEntry ValueEntry { get; }
+        internal AbeValueEntry ValueEntry { get; }
 
         public AbePropertyState State { get; } =
             new AbePropertyState();
@@ -279,6 +276,10 @@ namespace AbeAttributes.Editor
                 targetObject);
         }
 
+        // ================================================================
+        // Native Collection Element
+        // ================================================================
+
         private static AbeProperty
             CreateNativeCollectionElement(
                 AbeProperty parent,
@@ -298,17 +299,52 @@ namespace AbeAttributes.Editor
                 null,
                 valueType ?? typeof(object),
                 key,
-                null,
+                parent.Attributes,
                 element,
                 "Element " + index,
                 index);
         }
 
+        // ================================================================
+        // Serialized Collection Element
+        // ================================================================
+
+        private static AbeProperty
+            CreateSerializedCollectionElement(
+                AbeProperty parent,
+                SerializedProperty element,
+                int index,
+                Type elementType)
+        {
+            SerializedProperty copy =
+                element.Copy();
+
+            string key =
+                "serialized:"
+                + copy.propertyPath;
+
+            object targetObject =
+                AbeReflectionUtility.GetParentObject(
+                    parent.Tree.Target,
+                    copy.propertyPath);
+
+            return new AbeProperty(
+                parent.Tree,
+                AbePropertyKind.Serialized,
+                copy,
+                null,
+                elementType ?? typeof(object),
+                key,
+                parent.Attributes,
+                targetObject,
+                "Element " + index);
+        }
+
         internal static AbeProperty CreateGroup(
-    AbePropertyTree tree,
-    GroupStartAttribute groupAttribute,
-    string structureKey,
-    object targetObject)
+            AbePropertyTree tree,
+            GroupStartAttribute groupAttribute,
+            string structureKey,
+            object targetObject)
         {
             return new AbeProperty(
                 tree,
@@ -385,9 +421,9 @@ namespace AbeAttributes.Editor
                 !State.Enabled))
             {
                 _drawerChain ??=
-                        this.Tree
-                            .DrawerLocator
-                            .CreateChain(this);
+                    this.Tree
+                        .DrawerLocator
+                        .CreateChain(this);
 
                 _drawerChain.Draw(
                     this,
@@ -471,6 +507,16 @@ namespace AbeAttributes.Editor
             switch (Kind)
             {
                 case AbePropertyKind.Serialized:
+
+                    // AssetReference and AssetReferenceT<T> are terminal
+                    // values. Do not expose Addressables' internal
+                    // serialized fields.
+                    if (IsTerminalValueType(
+                            ValueEntry.ValueType))
+                    {
+                        return new List<AbeProperty>();
+                    }
+
                     return BuildSerializedChildren();
 
                 case AbePropertyKind.NonSerializedField:
@@ -531,6 +577,11 @@ namespace AbeAttributes.Editor
                 int count =
                     SerializedProperty.arraySize;
 
+                Type elementType =
+                    AbeCollectionUtility
+                        .GetElementType(
+                            ValueEntry.ValueType);
+
                 for (int i = 0;
                      i < count;
                      i++)
@@ -540,16 +591,12 @@ namespace AbeAttributes.Editor
                             .GetArrayElementAtIndex(i)
                             .Copy();
 
-                    MemberInfo member =
-                        AbeReflectionUtility.FindMember(
-                            Tree.TargetType,
-                            element.propertyPath);
-
                     AbeProperty child =
-                        CreateSerialized(
-                            Tree,
+                        CreateSerializedCollectionElement(
+                            this,
                             element,
-                            member);
+                            i,
+                            elementType);
 
                     result.Add(
                         child);
@@ -739,8 +786,8 @@ namespace AbeAttributes.Editor
         // ================================================================
 
         private void AddNestedFields(
-    List<AbeProperty> result,
-    object target)
+            List<AbeProperty> result,
+            object target)
         {
             IEnumerable<FieldInfo> fields =
                 AbeReflectionUtility.GetAllFields(
@@ -928,6 +975,24 @@ namespace AbeAttributes.Editor
         // Nested Inspection Rules
         // ================================================================
 
+        private static bool IsTerminalValueType(
+            Type type)
+        {
+            if (type == null)
+            {
+                return false;
+            }
+
+            if (typeof(
+                    UnityEngine.AddressableAssets.AssetReference)
+                .IsAssignableFrom(type))
+            {
+                return true;
+            }
+
+            return false;
+        }
+
         private static bool CanInspectNestedObject(
             object target)
         {
@@ -940,6 +1005,12 @@ namespace AbeAttributes.Editor
                 target.GetType();
 
             if (target is UnityEngine.Object)
+            {
+                return false;
+            }
+
+            if (IsTerminalValueType(
+                    type))
             {
                 return false;
             }

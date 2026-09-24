@@ -14,6 +14,29 @@ namespace AbeAttributes.Editor
             GUIContent label,
             DropdownAttribute attribute)
         {
+            // ============================================================
+            // Collection parent
+            //
+            // Dropdown belongs to each collection element.
+            // Let AbeCollectionDrawer draw the collection itself.
+            // The child elements inherit this attribute and will each
+            // create their own Dropdown drawer.
+            // ============================================================
+
+            if (AbeCollectionUtility.IsCollectionType(
+                    property.ValueEntry.ValueType))
+            {
+                CallNextDrawer(
+                    property,
+                    label);
+
+                return;
+            }
+
+            // ============================================================
+            // Values
+            // ============================================================
+
             object[] values =
                 GetValues(
                     property,
@@ -84,21 +107,75 @@ namespace AbeAttributes.Editor
                 values[newIndex]);
         }
 
+        // ================================================================
+        // Values
+        // ================================================================
+
         private object[] GetValues(
             AbeProperty property,
             string valuesName)
         {
-            if (string.IsNullOrEmpty(valuesName))
+            if (property == null ||
+                string.IsNullOrEmpty(valuesName))
             {
                 return null;
             }
 
-            object target =
-                property.TargetObject;
+            // ------------------------------------------------------------
+            // Current property target
+            // ------------------------------------------------------------
+
+            if (TryGetValuesFromTarget(
+                    property.TargetObject,
+                    valuesName,
+                    out object[] values))
+            {
+                return values;
+            }
+
+            // ------------------------------------------------------------
+            // Parent targets
+            //
+            // Required for:
+            //
+            // AddressableObject
+            //     └── labels
+            //          └── Element 0
+            //
+            // Element 0 itself is the string value, while labelList
+            // belongs to the parent object.
+            // ------------------------------------------------------------
+
+            AbeProperty current =
+                property.Parent;
+
+            while (current != null)
+            {
+                if (TryGetValuesFromTarget(
+                        current.TargetObject,
+                        valuesName,
+                        out values))
+                {
+                    return values;
+                }
+
+                current =
+                    current.Parent;
+            }
+
+            return null;
+        }
+
+        private bool TryGetValuesFromTarget(
+            object target,
+            string valuesName,
+            out object[] values)
+        {
+            values = null;
 
             if (target == null)
             {
-                return null;
+                return false;
             }
 
             if (!AbeReflectionUtility.TryGetMemberValue(
@@ -107,11 +184,14 @@ namespace AbeAttributes.Editor
                     out object value,
                     out _))
             {
-                return null;
+                return false;
             }
 
-            return ConvertValues(
-                value);
+            values =
+                ConvertValues(
+                    value);
+
+            return values != null;
         }
 
         private object[] ConvertValues(
@@ -155,6 +235,10 @@ namespace AbeAttributes.Editor
             return null;
         }
 
+        // ================================================================
+        // GUI
+        // ================================================================
+
         private GUIContent[] BuildGUIContents(
             object[] values)
         {
@@ -174,12 +258,35 @@ namespace AbeAttributes.Editor
             return result;
         }
 
+        // ================================================================
+        // Selection
+        // ================================================================
+
         private int FindValueIndex(
+            object currentValue,
+            object[] values)
+        {
+            return FindScalarValueIndex(
+                currentValue,
+                values);
+        }
+
+        private int FindScalarValueIndex(
             object currentValue,
             object[] values)
         {
             if (currentValue == null)
             {
+                for (int i = 0;
+                     i < values.Length;
+                     i++)
+                {
+                    if (values[i] == null)
+                    {
+                        return i;
+                    }
+                }
+
                 return -1;
             }
 
@@ -197,6 +304,10 @@ namespace AbeAttributes.Editor
 
             return -1;
         }
+
+        // ================================================================
+        // Equality
+        // ================================================================
 
         private static bool ValuesEqual(
             object a,
