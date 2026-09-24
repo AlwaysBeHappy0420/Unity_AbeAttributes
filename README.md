@@ -47,7 +47,6 @@ The repository also contains **PopToConsole**, a separate runtime debugging tool
 #### Validation
 
 * `Required`
-* `RequiredType`
 * `MinValue`
 * `MaxValue`
 * `ValidateInput`
@@ -190,49 +189,6 @@ List<string>
 ```
 
 This allows an Attribute to operate naturally on individual collection elements without special collection-specific drawer logic.
-
----
-
-# Unity Addressables
-
-AbeAttributes treats Unity Addressables `AssetReference` types as terminal values.
-
-For example:
-
-```csharp
-using UnityEngine.AddressableAssets;
-
-public class FloorFurniture : Furniture
-{
-    public AssetReferenceT<FurnitureTag> FrontLeft;
-    public AssetReferenceT<FurnitureTag> FrontRight;
-    public AssetReferenceT<FurnitureTag> BackLeft;
-    public AssetReferenceT<FurnitureTag> BackRight;
-}
-```
-
-`AssetReferenceT<T>` will be displayed as a value instead of being recursively expanded into Addressables' internal serialized fields.
-
-Conceptually:
-
-```text
-FrontLeft
-    AssetReferenceT<FurnitureTag>
-          ↓
-      Terminal Value
-```
-
-rather than:
-
-```text
-FrontLeft
-├── Addressable internal field
-├── GUID
-├── Sub-object information
-└── Other internal serialized data
-```
-
-This keeps third-party Unity types from unintentionally becoming part of the nested property tree.
 
 ---
 
@@ -760,5 +716,3 @@ Expect changes to APIs, folder organization, and implementation details as the p
 # License
 
 MIT License.
-
-See the repository license file for the complete license text.
