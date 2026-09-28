@@ -262,14 +262,22 @@ namespace AbeAttributes.Editor
                     propertyPath);
         }
 
+        internal static Type GetPropertyType(
+            Type type,
+            string propertyPath)
+        {
+            return AbePropertyPathUtility.GetPropertyType(
+                type,
+                propertyPath);
+        }
+
         // ================================================================
         // Collection Compatibility
         // ================================================================
 
-
         public static object GetCollectionElement(
-    object collection,
-    int index)
+            object collection,
+            int index)
         {
             return AbeCollectionUtility.GetElement(
                 collection,

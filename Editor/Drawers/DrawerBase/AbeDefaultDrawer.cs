@@ -21,16 +21,17 @@ namespace AbeAttributes.Editor
 
             switch (property.Kind)
             {
-                case AbePropertyKind.NativeProperty:
-                    DrawNativeProperty(
+                case AbePropertyKind.Serialized:
+                case AbePropertyKind.NonSerializedField:
+                case AbePropertyKind.NativeCollectionElement:
+                    DrawValue(
                         property,
                         label);
 
                     return;
 
-                case AbePropertyKind.NonSerializedField:
-                case AbePropertyKind.NativeCollectionElement:
-                    DrawValue(
+                case AbePropertyKind.NativeProperty:
+                    DrawNativeProperty(
                         property,
                         label);
 
@@ -58,7 +59,7 @@ namespace AbeAttributes.Editor
             }
 
             if (HasPopToConsoleManual(
-                    propertyInfo))
+                propertyInfo))
             {
                 DrawPopToConsoleManual(
                     property,
@@ -99,8 +100,8 @@ namespace AbeAttributes.Editor
         }
 
         private static void DrawPopToConsoleManual(
-    AbeProperty property,
-    PropertyInfo propertyInfo)
+            AbeProperty property,
+            PropertyInfo propertyInfo)
         {
             if (!GUILayout.Button(
                     "Pop To Console"))
@@ -148,8 +149,8 @@ namespace AbeAttributes.Editor
                 property.Children;
 
             if (CanDrawNestedObject(
-                    value,
-                    children))
+                value,
+                children))
             {
                 DrawNestedObject(
                     property,
@@ -216,8 +217,8 @@ namespace AbeAttributes.Editor
                 oldMixedValue;
 
             if (!ValuesEqual(
-                    value,
-                    newValue))
+                value,
+                newValue))
             {
                 property.ValueEntry.SetValue(
                     newValue);
@@ -294,7 +295,7 @@ namespace AbeAttributes.Editor
                 value.GetType();
 
             if (AbeValueFieldRegistry.CanDraw(
-                    type))
+                type))
             {
                 return false;
             }

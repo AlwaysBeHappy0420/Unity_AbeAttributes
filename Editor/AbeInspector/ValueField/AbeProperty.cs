@@ -5,8 +5,11 @@ using System.Reflection;
 using UnityEditor;
 using UnityEngine;
 
+
 namespace AbeAttributes.Editor
 {
+
+
     public sealed class AbeProperty
     {
         private readonly List<Attribute> _attributes =
@@ -176,6 +179,36 @@ namespace AbeAttributes.Editor
                 targetObject);
         }
 
+        private static AbeProperty CreateSerializedCollectionElement(
+            AbeProperty parent,
+            SerializedProperty element,
+            int index,
+            Type elementType)
+        {
+            SerializedProperty copy =
+                element.Copy();
+
+            string key =
+                "serialized:"
+                + copy.propertyPath;
+
+            object targetObject =
+                AbeReflectionUtility.GetParentObject(
+                    parent.Tree.Target,
+                    copy.propertyPath);
+
+            return new AbeProperty(
+                parent.Tree,
+                AbePropertyKind.Serialized,
+                copy,
+                null,
+                elementType ?? typeof(object),
+                key,
+                null,
+                targetObject,
+                "Element " + index);
+        }
+
         internal static AbeProperty
             CreateNonSerializedField(
                 AbePropertyTree tree,
@@ -276,10 +309,6 @@ namespace AbeAttributes.Editor
                 targetObject);
         }
 
-        // ================================================================
-        // Native Collection Element
-        // ================================================================
-
         private static AbeProperty
             CreateNativeCollectionElement(
                 AbeProperty parent,
@@ -299,45 +328,10 @@ namespace AbeAttributes.Editor
                 null,
                 valueType ?? typeof(object),
                 key,
-                parent.Attributes,
+                null,
                 element,
                 "Element " + index,
                 index);
-        }
-
-        // ================================================================
-        // Serialized Collection Element
-        // ================================================================
-
-        private static AbeProperty
-            CreateSerializedCollectionElement(
-                AbeProperty parent,
-                SerializedProperty element,
-                int index,
-                Type elementType)
-        {
-            SerializedProperty copy =
-                element.Copy();
-
-            string key =
-                "serialized:"
-                + copy.propertyPath;
-
-            object targetObject =
-                AbeReflectionUtility.GetParentObject(
-                    parent.Tree.Target,
-                    copy.propertyPath);
-
-            return new AbeProperty(
-                parent.Tree,
-                AbePropertyKind.Serialized,
-                copy,
-                null,
-                elementType ?? typeof(object),
-                key,
-                parent.Attributes,
-                targetObject,
-                "Element " + index);
         }
 
         internal static AbeProperty CreateGroup(
@@ -507,16 +501,6 @@ namespace AbeAttributes.Editor
             switch (Kind)
             {
                 case AbePropertyKind.Serialized:
-
-                    // AssetReference and AssetReferenceT<T> are terminal
-                    // values. Do not expose Addressables' internal
-                    // serialized fields.
-                    if (IsTerminalValueType(
-                            ValueEntry.ValueType))
-                    {
-                        return new List<AbeProperty>();
-                    }
-
                     return BuildSerializedChildren();
 
                 case AbePropertyKind.NonSerializedField:
@@ -975,24 +959,6 @@ namespace AbeAttributes.Editor
         // Nested Inspection Rules
         // ================================================================
 
-        private static bool IsTerminalValueType(
-            Type type)
-        {
-            if (type == null)
-            {
-                return false;
-            }
-
-            if (typeof(
-                    UnityEngine.AddressableAssets.AssetReference)
-                .IsAssignableFrom(type))
-            {
-                return true;
-            }
-
-            return false;
-        }
-
         private static bool CanInspectNestedObject(
             object target)
         {
@@ -1005,12 +971,6 @@ namespace AbeAttributes.Editor
                 target.GetType();
 
             if (target is UnityEngine.Object)
-            {
-                return false;
-            }
-
-            if (IsTerminalValueType(
-                    type))
             {
                 return false;
             }

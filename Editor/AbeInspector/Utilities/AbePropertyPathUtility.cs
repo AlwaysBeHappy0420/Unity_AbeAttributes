@@ -191,6 +191,96 @@ namespace AbeAttributes.Editor
         }
 
         // ====================================================================
+        // Get Property Type
+        //
+        // Resolves the declared type represented by a property path.
+        //
+        // Examples:
+        //
+        //   "_replies"
+        //       -> List<ReplySection>
+        //
+        //   "_replies.Array.data[0]"
+        //       -> ReplySection
+        //
+        //   "_outer.Array.data[0]"
+        //       -> List<ReplySection>
+        //
+        // ====================================================================
+
+        internal static Type GetPropertyType(
+            Type type,
+            string propertyPath)
+        {
+            if (type == null ||
+                string.IsNullOrEmpty(propertyPath))
+            {
+                return null;
+            }
+
+            string[] parts =
+                propertyPath.Split('.');
+
+            Type currentType =
+                type;
+
+            for (int i = 0;
+                 i < parts.Length;
+                 i++)
+            {
+                if (currentType == null)
+                {
+                    return null;
+                }
+
+                string part =
+                    parts[i];
+
+                // ------------------------------------------------------------
+                // Array.data[index]
+                // ------------------------------------------------------------
+
+                if (part == "Array" &&
+                    i + 1 < parts.Length &&
+                    TryParseDataIndex(
+                        parts[i + 1],
+                        out _))
+                {
+                    currentType =
+                        AbeCollectionUtility.GetElementType(
+                            currentType);
+
+                    if (currentType == null)
+                    {
+                        return null;
+                    }
+
+                    i++;
+                    continue;
+                }
+
+                // ------------------------------------------------------------
+                // Normal member
+                // ------------------------------------------------------------
+
+                MemberInfo member =
+                    FindDirectMember(
+                        currentType,
+                        part);
+
+                if (member == null)
+                {
+                    return null;
+                }
+
+                currentType =
+                    GetMemberType(member);
+            }
+
+            return currentType;
+        }
+
+        // ====================================================================
         // Direct Member Lookup
         // ====================================================================
 
