@@ -9,6 +9,7 @@ namespace AbeAttributes
         AllowMultiple = false)]
     public sealed class RequiredAttribute : AbeAttribute
     {
+        public override bool ApplyToCollectionElement => true;
         public string Message { get; }
 
         public Type[] RequiredTypes { get; }

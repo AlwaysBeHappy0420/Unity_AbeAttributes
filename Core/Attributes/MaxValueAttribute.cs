@@ -5,6 +5,7 @@ namespace AbeAttributes
     [AttributeUsage(AttributeTargets.Field, AllowMultiple = false, Inherited = true)]
     public class MaxValueAttribute : AbeAttribute
     {
+        public override bool ApplyToCollectionElement => true;
         public float MaxValue { get; private set; }
         public string MaxValueName { get; private set; }
 

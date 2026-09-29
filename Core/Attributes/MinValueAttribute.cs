@@ -5,6 +5,7 @@ namespace AbeAttributes
     [AttributeUsage(AttributeTargets.Field, AllowMultiple = false, Inherited = true)]
     public class MinValueAttribute : AbeAttribute
     {
+        public override bool ApplyToCollectionElement => true;
         public float MinValue { get; private set; }
         public string MinValueName { get; private set; }
 

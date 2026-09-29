@@ -5,6 +5,7 @@ namespace AbeAttributes
     [AttributeUsage(AttributeTargets.Field, AllowMultiple = false, Inherited = true)]
     public class MinMaxSliderAttribute : DrawerAttribute
     {
+        public override bool ApplyToCollectionElement => true;
         public float MinValue { get; private set; }
         public float MaxValue { get; private set; }
 

@@ -5,6 +5,7 @@ namespace AbeAttributes
     [AttributeUsage(AttributeTargets.Field, AllowMultiple = false, Inherited = true)]
     public class ProgressBarAttribute : DrawerAttribute
     {
+        public override bool ApplyToCollectionElement => true;
         public string Name { get; private set; }
         public float MaxValue { get; set; }
         public string MaxValueName { get; private set; }

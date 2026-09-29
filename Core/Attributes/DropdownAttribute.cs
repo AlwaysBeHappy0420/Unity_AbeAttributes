@@ -11,7 +11,7 @@ namespace AbeAttributes
     public class DropdownAttribute : DrawerAttribute
     {
         public string ValuesName { get; private set; }
-
+        public override bool ApplyToCollectionElement => true;
         public DropdownAttribute(
             string valuesName)
         {

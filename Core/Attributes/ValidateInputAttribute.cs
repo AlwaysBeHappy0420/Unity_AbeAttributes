@@ -5,6 +5,7 @@ namespace AbeAttributes
     [AttributeUsage(AttributeTargets.Field, AllowMultiple = false, Inherited = true)]
     public class ValidateInputAttribute : AbeAttribute
     {
+        public override bool ApplyToCollectionElement => true;
         public string CallbackName { get; private set; }
         public string Message { get; private set; }
 

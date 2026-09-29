@@ -204,9 +204,37 @@ namespace AbeAttributes.Editor
                 null,
                 elementType ?? typeof(object),
                 key,
-                null,
+                GetCollectionElementAttributes(parent),
                 targetObject,
                 "Element " + index);
+        }
+
+        private static IEnumerable<Attribute>
+            GetCollectionElementAttributes(
+                AbeProperty parent)
+        {
+            IReadOnlyList<Attribute> attributes =
+                parent.Attributes;
+
+            if (attributes == null ||
+                attributes.Count == 0)
+            {
+                yield break;
+            }
+
+            for (int i = 0;
+                 i < attributes.Count;
+                 i++)
+            {
+                Attribute attribute =
+                    attributes[i];
+
+                if (attribute is AbeAttributes.AbeAttribute abeAttribute &&
+                    abeAttribute.ApplyToCollectionElement)
+                {
+                    yield return attribute;
+                }
+            }
         }
 
         internal static AbeProperty
@@ -328,7 +356,7 @@ namespace AbeAttributes.Editor
                 null,
                 valueType ?? typeof(object),
                 key,
-                null,
+                GetCollectionElementAttributes(parent),
                 element,
                 "Element " + index,
                 index);
