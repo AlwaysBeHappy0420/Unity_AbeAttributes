@@ -1,3 +1,4 @@
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using UnityEditor;
@@ -43,8 +44,8 @@ namespace AbeAttributes.Editor
         }
 
         protected override void DrawValuePropertyLayout(
-    AbeProperty property,
-    GUIContent label)
+            AbeProperty property,
+            GUIContent label)
         {
             if (property == null)
             {
@@ -171,6 +172,11 @@ namespace AbeAttributes.Editor
                     property.ClearChildren();
                 }
 
+                HandleMultiObjectDrop(
+                    property,
+                    serializedProperty,
+                    headerRect);
+
                 // ========================================================
                 // Elements
                 // ========================================================
@@ -202,6 +208,189 @@ namespace AbeAttributes.Editor
 
                 EditorGUILayout.EndVertical();
             }
+        }
+
+        // ================================================================
+        // Multi Object Drop
+        // ================================================================
+
+        private void HandleMultiObjectDrop(
+            AbeProperty property,
+            SerializedProperty serializedProperty,
+            Rect dropRect)
+        {
+            Event currentEvent =
+                Event.current;
+
+            if (!dropRect.Contains(
+                    currentEvent.mousePosition))
+            {
+                return;
+            }
+
+            if (currentEvent.type != EventType.DragUpdated &&
+                currentEvent.type != EventType.DragPerform)
+            {
+                return;
+            }
+
+            Type elementType =
+                GetCollectionElementType(
+                    property.ValueEntry.ValueType);
+
+            if (elementType == null ||
+                !typeof(UnityEngine.Object)
+                    .IsAssignableFrom(elementType))
+            {
+                return;
+            }
+
+            UnityEngine.Object[] draggedObjects =
+                DragAndDrop.objectReferences;
+
+            if (draggedObjects == null ||
+                draggedObjects.Length == 0)
+            {
+                return;
+            }
+
+            int validCount =
+                CountValidDraggedObjects(
+                    draggedObjects,
+                    elementType);
+
+            if (validCount <= 0)
+            {
+                return;
+            }
+
+            DragAndDrop.visualMode =
+                DragAndDropVisualMode.Copy;
+
+            if (currentEvent.type != EventType.DragPerform)
+            {
+                currentEvent.Use();
+                return;
+            }
+
+            DragAndDrop.AcceptDrag();
+
+            int oldSize =
+                serializedProperty.arraySize;
+
+            int newSize =
+                oldSize + validCount;
+
+            serializedProperty.arraySize =
+                newSize;
+
+            int elementIndex =
+                oldSize;
+
+            for (int i = 0;
+                 i < draggedObjects.Length;
+                 i++)
+            {
+                UnityEngine.Object draggedObject =
+                    draggedObjects[i];
+
+                if (!IsValidDraggedObject(
+                        draggedObject,
+                        elementType))
+                {
+                    continue;
+                }
+
+                SerializedProperty element =
+                    serializedProperty
+                        .GetArrayElementAtIndex(
+                            elementIndex);
+
+                element.objectReferenceValue =
+                    draggedObject;
+
+                elementIndex++;
+            }
+
+            serializedProperty
+                .serializedObject
+                .ApplyModifiedProperties();
+
+            property.ClearChildren();
+
+            currentEvent.Use();
+        }
+
+        private static int CountValidDraggedObjects(
+            UnityEngine.Object[] draggedObjects,
+            Type elementType)
+        {
+            int count = 0;
+
+            for (int i = 0;
+                 i < draggedObjects.Length;
+                 i++)
+            {
+                if (IsValidDraggedObject(
+                        draggedObjects[i],
+                        elementType))
+                {
+                    count++;
+                }
+            }
+
+            return count;
+        }
+
+        private static bool IsValidDraggedObject(
+            UnityEngine.Object draggedObject,
+            Type elementType)
+        {
+            return draggedObject != null &&
+                   elementType.IsAssignableFrom(
+                       draggedObject.GetType());
+        }
+
+        private static Type GetCollectionElementType(
+            Type collectionType)
+        {
+            if (collectionType == null)
+            {
+                return null;
+            }
+
+            if (collectionType.IsArray)
+            {
+                return collectionType.GetElementType();
+            }
+
+            if (collectionType.IsGenericType)
+            {
+                Type[] arguments =
+                    collectionType.GetGenericArguments();
+
+                if (arguments.Length > 0)
+                {
+                    return arguments[0];
+                }
+            }
+
+            Type enumerableType =
+                collectionType.GetInterface(
+                    "IEnumerable`1");
+
+            if (enumerableType != null)
+            {
+                Type[] arguments =
+                    enumerableType.GetGenericArguments();
+
+                if (arguments.Length > 0)
+                {
+                    return arguments[0];
+                }
+            }
+
+            return null;
         }
 
         // ================================================================
